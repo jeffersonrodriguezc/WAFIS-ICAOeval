@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+.venv/
+env/
+venv/
+
+# Datasets
+datasets/
+data/
+*.zip
+*.tar.gz
+
+# Modelos y resultados
+**/model/
+experiments/
+*.pth
+*.pt
+*.ckpt
+*.log
+
+# Archivos de configuración sensibles
+*.yaml
+*.yml
+!configs/
+
+# Archivos temporales
+*.tmp
+*.bak
+*.swp
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+
+# VSCode
+.vscode/
+
+# Docker
+*.pid
+*.sock
