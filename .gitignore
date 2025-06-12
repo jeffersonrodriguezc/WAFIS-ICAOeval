@@ -29,7 +29,9 @@ experiments/
 # Archivos de configuración sensibles
 *.yaml
 *.yml
-!configs/
+# EXCEPTO los de configuraciones públicas
+!**/configs/*.yaml
+!docker-compose.yml
 
 # Archivos temporales
 *.tmp
