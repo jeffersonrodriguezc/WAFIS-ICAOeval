@@ -3,6 +3,7 @@ Author: Gao Yu
 Company: Bosch Research / Asia Pacific
 Date: 2024-08-03
 Description: training script for stegaformer
+Adapted for Jefferson Rodriguez & ChatGPT
 """
 
 import os
@@ -66,7 +67,6 @@ def compute_image_score(cover, generated):
     
     return p, s
 
-
 def test(test_loader, encoder, decoder, message_N):
     encoder.eval()
     decoder.eval()
@@ -98,6 +98,50 @@ def test(test_loader, encoder, decoder, message_N):
     decoder.train()
     
     return sum(acc)/len(acc), sum(psnr)/len(psnr), sum(ssim)/len(ssim)
+
+def load_checkpoint_if_available(encoder, decoder, encoder_optimizer, decoder_optimizer, encoder_scheduler, decoder_scheduler, save_path, tag='psnr'):
+    """
+    Loads the checkpoint if it exists and resumes training.
+
+    Parameters:
+        encoder, decoder: model instances
+        encoder_optimizer, decoder_optimizer: optimizer instances
+        encoder_scheduler, decoder_scheduler: learning rate schedulers
+        save_path: base path where checkpoints are stored
+        tag: can be 'psnr', 'ssim', or 'acc' (to select which checkpoint to load)
+    Returns:
+        start_iteration: iteration number from which to resume
+    """
+    start_iteration = 0
+
+    resume_encoder_path = os.path.join(save_path, f'best_{tag}_encoder.pth.tar')
+    resume_decoder_path = os.path.join(save_path, f'best_{tag}_decoder.pth.tar')
+
+    if os.path.exists(resume_encoder_path) and os.path.exists(resume_decoder_path):
+        print(f"🔄 Restoring checkpoint from '{tag.upper()}'...")
+
+        encoder_ckpt = torch.load(resume_encoder_path)
+        decoder_ckpt = torch.load(resume_decoder_path)
+
+        encoder.load_state_dict(encoder_ckpt['state_dict'])
+        decoder.load_state_dict(decoder_ckpt['state_dict'])
+
+        encoder_optimizer.load_state_dict(encoder_ckpt['optimizer'])
+        decoder_optimizer.load_state_dict(decoder_ckpt['optimizer'])
+
+        start_iteration = encoder_ckpt.get('iteration', start_iteration)
+
+        # update the schedulers to the current iteration
+        for _ in range(start_iteration):
+            encoder_scheduler.step()
+            decoder_scheduler.step()
+
+        print(f"✅ Checkpoint loaded. Iteration: {start_iteration}")
+    else:
+        print("ℹ️ No checkpoint founded. Starting from scratch.")
+
+    return start_iteration
+
 
 train_path = os.path.join(args.data_path,args.dataset,'train/real')
 test_path = os.path.join(args.data_path,args.dataset,'val/real')
@@ -167,10 +211,10 @@ else:
 lpips_alex = lpips.LPIPS(net="vgg", verbose=False)
 lpips_alex.cuda(device_id)
 
-save_log_interval = 1
-save_image_interval = 1#4000
-save_model_interval = 1#int(max_iter/2)
-test_interval = 1#500
+save_log_interval = 10
+save_image_interval = 100 #4000
+save_model_interval = 50 #int(max_iter/2)
+test_interval = 100 #500
 
 image_loss_scale = 1.0
 image_loss_ramp = int(max_iter/2)
@@ -184,7 +228,20 @@ max_ssim = 0.000
 max_acc = 0.000
 scaler = amp.GradScaler()
 
-for k in tqdm(range(max_iter)):
+# To restore the training from a checkpoint
+start_iteration = load_checkpoint_if_available(
+    encoder=encoder,
+    decoder=decoder,
+    encoder_optimizer=encoder_optimizer,
+    decoder_optimizer=decoder_optimizer,
+    encoder_scheduler=encoder_scheduler,
+    decoder_scheduler=decoder_scheduler,
+    save_path=save_path,
+    tag='psnr'  # decide what is better to restore: 'psnr', 'ssim' or 'acc'
+)
+
+# restore the training from the last iteration
+for k in tqdm(range(start_iteration, max_iter)):
 #for k in range(max_iter):
     
     s_im_loss = min(image_loss_scale * k / image_loss_ramp, image_loss_scale)
@@ -251,38 +308,81 @@ for k in tqdm(range(max_iter)):
             if (k+1) > save_model_interval:
                 if test_psnr > max_psnr:
                     max_psnr = test_psnr
-                    state_dict = decoder.state_dict()
-                    for key in state_dict.keys():
-                        state_dict[key] = state_dict[key].to(torch.device('cpu'))
-                        torch.save(state_dict, save_path+'/best_psnr_decoder.pth.tar')
-                    state_dict = encoder.state_dict()
-                    for key in state_dict.keys():
-                        state_dict[key] = state_dict[key].to(torch.device('cpu'))
-                    torch.save(state_dict, save_path+'/best_psnr_encoder.pth.tar')   
+                    # decoder checkpoint
+                    decoder_checkpoint = {
+                        'iteration': k + 1,
+                        'state_dict': decoder.state_dict(),
+                        'optimizer': decoder_optimizer.state_dict(),
+                    }
+                    # pass to cpu and save
+                    #state_dict = decoder.state_dict()
+                    for key in decoder_checkpoint['state_dict'].keys():
+                        decoder_checkpoint['state_dict'][key] = decoder_checkpoint['state_dict'][key].to(torch.device('cpu'))
+                    torch.save(decoder_checkpoint, save_path+'/best_psnr_decoder.pth.tar')
+
+                    # encoder checkpoint
+                    encoder_checkpoint = {
+                        'iteration': k + 1,
+                        'state_dict': encoder.state_dict(),
+                        'optimizer': encoder_optimizer.state_dict(),
+                    }
+                    # pass to cpu and save
+                    #state_dict = encoder.state_dict()
+                    for key in encoder_checkpoint['state_dict'].keys():
+                        encoder_checkpoint['state_dict'][key] = encoder_checkpoint['state_dict'][key].to(torch.device('cpu'))
+                    torch.save(encoder_checkpoint, save_path+'/best_psnr_encoder.pth.tar')   
                     
                 if test_ssim > max_ssim:
                     max_ssim = test_ssim
-                    state_dict = decoder.state_dict()
-                    for key in state_dict.keys():
-                        state_dict[key] = state_dict[key].to(torch.device('cpu'))
-                    torch.save(state_dict, save_path+'/best_ssim_decoder.pth.tar')
+                    # decoder checkpoint
+                    decoder_checkpoint = {
+                        'iteration': k + 1,
+                        'state_dict': decoder.state_dict(),
+                        'optimizer': decoder_optimizer.state_dict(),
+                    }
+                    # pass to cpu and save
+                    #state_dict = decoder.state_dict()
+                    for key in decoder_checkpoint['state_dict'].keys():
+                        decoder_checkpoint['state_dict'][key] = decoder_checkpoint['state_dict'][key].to(torch.device('cpu'))
+                    torch.save(decoder_checkpoint, save_path+'/best_ssim_decoder.pth.tar')
 
-                    state_dict = encoder.state_dict()
-                    for key in state_dict.keys():
-                        state_dict[key] = state_dict[key].to(torch.device('cpu'))
-                    torch.save(state_dict, save_path+'/best_ssim_encoder.pth.tar')
+                    # encoder checkpoint
+                    encoder_checkpoint = {
+                        'iteration': k + 1,
+                        'state_dict': encoder.state_dict(),
+                        'optimizer': encoder_optimizer.state_dict(),
+                    }
+                    # pass to cpu and save
+                    #state_dict = encoder.state_dict()
+                    for key in encoder_checkpoint['state_dict'].keys():
+                        encoder_checkpoint['state_dict'][key] = encoder_checkpoint['state_dict'][key].to(torch.device('cpu'))
+                    torch.save(encoder_checkpoint, save_path+'/best_ssim_encoder.pth.tar')
                     
                 if test_message_acc > max_acc:
                     max_acc = test_message_acc
-                    state_dict = decoder.state_dict()
-                    for key in state_dict.keys():
-                        state_dict[key] = state_dict[key].to(torch.device('cpu'))
-                    torch.save(state_dict, save_path+'/best_acc_decoder.pth.tar')
+                    # decoder checkpoint
+                    decoder_checkpoint = {
+                        'iteration': k + 1,
+                        'state_dict': decoder.state_dict(),
+                        'optimizer': decoder_optimizer.state_dict(),
+                    }
+                    # pass to cpu and save
+                    #state_dict = decoder.state_dict()
+                    for key in decoder_checkpoint['state_dict'].keys():
+                        decoder_checkpoint['state_dict'][key] = decoder_checkpoint['state_dict'][key].to(torch.device('cpu'))
+                    torch.save(decoder_checkpoint, save_path+'/best_acc_decoder.pth.tar')
 
-                    state_dict = encoder.state_dict()
-                    for key in state_dict.keys():
-                        state_dict[key] = state_dict[key].to(torch.device('cpu'))
-                    torch.save(state_dict, save_path+'/best_acc_encoder.pth.tar')
+                    # encoder checkpoint
+                    encoder_checkpoint = {
+                        'iteration': k + 1,
+                        'state_dict': encoder.state_dict(),
+                        'optimizer': encoder_optimizer.state_dict(),
+                    }
+                    # pass to cpu and save
+                    #state_dict = encoder.state_dict()
+                    for key in encoder_checkpoint['state_dict'].keys():
+                        encoder_checkpoint['state_dict'][key] = encoder_checkpoint['state_dict'][key].to(torch.device('cpu'))
+                    torch.save(encoder_checkpoint, save_path+'/best_acc_encoder.pth.tar')
             
         if (k + 1) % save_image_interval == 0 or (k + 1) == max_iter:
             save_images = enco_images.cpu()

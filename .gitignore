@@ -18,22 +18,23 @@ data/
 *.zip
 *.tar.gz
 
-# Modelos y resultados
+# models and results
 **/model/
 experiments/
+**/runs/
 *.pth
 *.pt
 *.ckpt
 *.log
 
-# Archivos de configuración sensibles
+# critical config files
 *.yaml
 *.yml
 # EXCEPTO los de configuraciones públicas
 !**/configs/*.yaml
 !docker-compose.yml
 
-# Archivos temporales
+# temporal files
 *.tmp
 *.bak
 *.swp
