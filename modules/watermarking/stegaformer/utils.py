@@ -58,6 +58,9 @@ def infinite_sampler(n: int):
     Yields:
         int: Random index from 0 to n-1.
     """
+    if n <= 0:
+        raise ValueError("[ERROR] El dataset está vacío. No se puede crear un sampler con 0 elementos.")
+
     i = n - 1
     order = np.random.permutation(n)
     while True:
@@ -97,7 +100,6 @@ class InfiniteSamplerWrapper(data.Sampler):
         """
         return 2 ** 31
         
-
 def rgb_to_yuv(image: torch.Tensor) -> torch.Tensor:
     """
     Convert an RGB image to YUV color space.
@@ -187,6 +189,7 @@ class MIMData(Dataset):
         message_size (int, optional): Size of each message. Defaults to 64*64.
         image_size (tuple, optional): Size of the images. Defaults to (256, 256).
         dataset (str, optional): Dataset type ('coco' or 'div2k'). Defaults to 'coco'.
+            # Adapted to support CelebA-HQ (celeba_hq) dataset as well.
         roi (str, optional): Region of interest ('fit' or 'crop'). Defaults to 'fit'.
         msg_r (int, optional): Message range. Defaults to 1.
         img_norm (bool, optional): Whether to normalize images. Defaults to False.
@@ -197,7 +200,7 @@ class MIMData(Dataset):
         num_message: int = 16,
         message_size: int = 64*64,
         image_size: tuple = (256, 256),
-        dataset: str = 'coco',
+        dataset: str = 'celeba_hq',
         roi: str = 'fit',
         msg_r: int = 1,
         img_norm: bool = False
@@ -210,13 +213,15 @@ class MIMData(Dataset):
         self.msg_range = msg_r
         self.image_norm = img_norm
         
-        assert dataset in ['coco', 'div2k'], "Invalid DataSet. only support ['coco', 'div2k']."
+        assert dataset in ['coco', 'div2k', 'celeba_hq'], "Invalid DataSet. only support ['coco', 'div2k', 'celeba_hq']."
         assert roi in ['fit', 'crop'], "Invalid Roi Selection. only support ['fit', 'crop']."
         
         if dataset == 'div2k':
             self.files_list = glob(os.path.join(self.data_path, '*.png'))
         elif dataset == 'coco':
             self.files_list = glob(os.path.join(self.data_path, '*.jpg'))
+        elif dataset == 'celeba_hq':
+            self.files_list = glob(os.path.join(self.data_path, '*.png'))
             
         self.to_tensor = transforms.ToTensor()
 
@@ -260,12 +265,13 @@ class MIMData(Dataset):
         return len(self.files_list)
 
 if __name__ == '__main__':
-    path = os.path.join('/media/SSD2/stega_all/stega_data/','div2k','train')
+    path = os.path.join('/facial_data','celeba_hq','train/real')
+    print(path, 'path')
     # message r (range) should be 1, 3, 7 for binary, 1, 2, 3-bit per message unit
     msg_range = 3
     dataset = MIMData(data_path=path, num_message=64*64, message_size=16, image_size=(256, 256),
-                        dataset='div2k', msg_r=msg_range, img_norm=False)
-    
+                        dataset='celeba_hq', msg_r=msg_range, img_norm=False)
+    print(f"Dataset size: {len(dataset)}")
     data_loader = DataLoader(dataset, batch_size=1, shuffle=True)
     data_iterator = iter(data_loader)
     img, msg1 = next(data_iterator)

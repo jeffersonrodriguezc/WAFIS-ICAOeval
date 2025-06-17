@@ -1,0 +1,25 @@
+services:
+  stegaformer_train:
+    build: ./modules/watermarking/stegaformer
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    volumes:
+      - ./datasets:/facial_data:ro
+      - ./modules/watermarking/stegaformer:/app:rw
+    command: ["python", "train.py"]
+    profiles: ["train-stegaformer"]
+
+  stegaformer_embed:
+    build: ./modules/watermarking/stegaformer
+    volumes:
+      - ./datasets/processed:/data/in:ro
+      - ./experiments/output:/data/out:rw
+      - ./modules/watermarking/stegaformer/model:/app/model:ro
+    command: ["python", "run_watermark.py", "--input_dir", "/data/in", "--output_dir", "/data/out", "--model", "model/stegaformer.pth"]
+    profiles: ["infer"]
+

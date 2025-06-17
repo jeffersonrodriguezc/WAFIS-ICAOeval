@@ -30,9 +30,9 @@ parser.add_argument('--iterations', type=int, default=80000)
 parser.add_argument('--base_lr', type=float, default=5e-4)
 
 parser.add_argument('--win_size', type=int, default=16)
-parser.add_argument('--model_path', type=str, default='./stega_model/')
-parser.add_argument('--data_path', type=str, default='./stega_data')
-parser.add_argument('--dataset', type=str, default='div2k')
+parser.add_argument('--model_path', type=str, default='/model/')
+parser.add_argument('--data_path', type=str, default='/facial_data/')
+parser.add_argument('--dataset', type=str, default='celeba_hq')
 parser.add_argument('--device', type=int, default=0)
 parser.add_argument('--ext', type=str, default='_255_w')
 parser.add_argument('--n_clamp', type=int, default=4)
@@ -99,8 +99,11 @@ def test(test_loader, encoder, decoder, message_N):
     
     return sum(acc)/len(acc), sum(psnr)/len(psnr), sum(ssim)/len(ssim)
 
-train_path = os.path.join(args.data_path,args.dataset,'train')
-test_path = os.path.join(args.data_path,args.dataset,'val')
+train_path = os.path.join(args.data_path,args.dataset,'train/real')
+test_path = os.path.join(args.data_path,args.dataset,'val/real')
+
+print('Training on dataset:', args.dataset)
+print('Training data path:', train_path)
 
 msg_range = args.msg_range
 norm = args.enable_img_norm
@@ -108,6 +111,9 @@ train_dataset = MIMData(data_path=train_path, num_message=message_N, message_siz
                         dataset=args.dataset, msg_r=msg_range)
 test_dataset = MIMData(data_path=test_path, num_message=message_N, message_size=message_L, image_size=(im_size, im_size),
                        dataset=args.dataset, msg_r=msg_range)
+
+print('Training dataset size:', len(train_dataset))
+print('Validation dataset size:', len(test_dataset))
 
 train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, pin_memory=True, sampler=InfiniteSamplerWrapper(train_dataset), shuffle=False, num_workers=8)
 test_dataloader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=8)
