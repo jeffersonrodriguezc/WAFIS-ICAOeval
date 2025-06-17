@@ -211,10 +211,10 @@ else:
 lpips_alex = lpips.LPIPS(net="vgg", verbose=False)
 lpips_alex.cuda(device_id)
 
-save_log_interval = 10
-save_image_interval = 100 #4000
-save_model_interval = 50 #int(max_iter/2)
-test_interval = 100 #500
+save_log_interval = 100
+save_image_interval = 1000 #4000
+save_model_interval = 500 #int(max_iter/2)
+test_interval = 1000 #500
 
 image_loss_scale = 1.0
 image_loss_ramp = int(max_iter/2)
