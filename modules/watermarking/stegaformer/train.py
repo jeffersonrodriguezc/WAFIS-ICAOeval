@@ -26,12 +26,12 @@ parser = argparse.ArgumentParser(description='Params for stf model')
 parser.add_argument('--batch_size', type=int, default=2)
 parser.add_argument('--bpp', type=int, default=1)
 parser.add_argument('--query', type=str, default='im')
-parser.add_argument('--iterations', type=int, default=80000)
+parser.add_argument('--iterations', type=int, default=10)
 parser.add_argument('--base_lr', type=float, default=5e-4)
 
 parser.add_argument('--win_size', type=int, default=16)
-parser.add_argument('--model_path', type=str, default='/model/')
-parser.add_argument('--data_path', type=str, default='/facial_data/')
+parser.add_argument('--model_path', type=str, default='/app/runs/')
+parser.add_argument('--data_path', type=str, default='/app/facial_data/')
 parser.add_argument('--dataset', type=str, default='celeba_hq')
 parser.add_argument('--device', type=int, default=0)
 parser.add_argument('--ext', type=str, default='_255_w')
@@ -124,8 +124,6 @@ scale = args.msg_scale
 encoder_eb_dim = int(message_L*scale)
 decoder_eb_dim = int(message_L*scale)
 
-
-
 query_type = args.query
 encoder = Encoder(msg_L=message_L, embed_dim=encoder_eb_dim, Q=query_type, win_size=args.win_size, msg_pose=args.msg_pose)
 decoder = Decoder(img_size=256, msg_L=message_L, embed_dim=decoder_eb_dim, win_size=args.win_size, msg_pose=args.msg_pose)
@@ -146,17 +144,17 @@ decoder_scheduler = optim.lr_scheduler.StepLR(decoder_optimizer, int(max_iter/cl
 save_path = os.path.join(args.model_path,str(args.msg_range)+'_'+str(args.bpp)+args.ext+str(args.win_size)+'_'+str(args.msg_pose)+'_'+str(args.query),args.dataset,'model')
 isExist = os.path.exists(save_path)
 if not isExist:
-    os.makedirs(save_path)
+    os.makedirs(save_path, exist_ok=True)
 
 log_path = os.path.join(args.model_path,str(args.msg_range)+'_'+str(args.bpp)+args.ext+str(args.win_size)+'_'+str(args.msg_pose)+'_'+str(args.query),args.dataset,'logs')
 isExist = os.path.exists(log_path)
 if not isExist:
-    os.makedirs(log_path)
+    os.makedirs(log_path, exist_ok=True)
     
 log_img_path = os.path.join(args.model_path,str(args.msg_range)+'_'+str(args.bpp)+args.ext+str(args.win_size)+'_'+str(args.msg_pose)+'_'+str(args.query),args.dataset,'samples')
 isExist = os.path.exists(log_img_path)
 if not isExist:
-    os.makedirs(log_img_path)
+    os.makedirs(log_img_path, exist_ok=True)
     
 writer = SummaryWriter(log_dir=log_path)
 
@@ -169,10 +167,10 @@ else:
 lpips_alex = lpips.LPIPS(net="vgg", verbose=False)
 lpips_alex.cuda(device_id)
 
-save_log_interval = 50
-save_image_interval = 4000
-save_model_interval = int(max_iter/2)
-test_interval = 500
+save_log_interval = 1
+save_image_interval = 1#4000
+save_model_interval = 1#int(max_iter/2)
+test_interval = 1#500
 
 image_loss_scale = 1.0
 image_loss_ramp = int(max_iter/2)
@@ -181,13 +179,13 @@ secret_loss_ramp = 1
 lpips_loss_scale = 0.1
 lpips_loss_ramp = int(max_iter/2)
 
-max_psnr = 0.0
-max_ssim = 0.0
-max_acc = 0.0
+max_psnr = 0.000
+max_ssim = 0.000
+max_acc = 0.000
 scaler = amp.GradScaler()
 
-#for k in tqdm(range(max_iter)):
-for k in range(max_iter):
+for k in tqdm(range(max_iter)):
+#for k in range(max_iter):
     
     s_im_loss = min(image_loss_scale * k / image_loss_ramp, image_loss_scale)
     s_msg_loss = min(secret_loss_scale * k / secret_loss_ramp, secret_loss_scale)

@@ -265,7 +265,7 @@ class MIMData(Dataset):
         return len(self.files_list)
 
 if __name__ == '__main__':
-    path = os.path.join('/facial_data','celeba_hq','train/real')
+    path = os.path.join('/app/facial_data','celeba_hq','train/real')
     print(path, 'path')
     # message r (range) should be 1, 3, 7 for binary, 1, 2, 3-bit per message unit
     msg_range = 3

@@ -9,7 +9,7 @@ services:
               count: all
               capabilities: [gpu]
     volumes:
-      - ./datasets:/facial_data:ro
+      - ./datasets:/app/facial_data:ro
       - ./modules/watermarking/stegaformer:/app:rw
     command: ["python", "train.py"]
     profiles: ["train-stegaformer"]
@@ -22,4 +22,16 @@ services:
       - ./modules/watermarking/stegaformer/model:/app/model:ro
     command: ["python", "run_watermark.py", "--input_dir", "/data/in", "--output_dir", "/data/out", "--model", "model/stegaformer.pth"]
     profiles: ["infer"]
+
+  tensorboard_viewer:
+    image: tensorflow/tensorflow:2.13.0
+    ports:
+      - "6006:6006"
+    volumes:
+      - ./modules/watermarking:/app/:rw
+    working_dir: /app
+    entrypoint: []
+    profiles: ["tensorboard"]
+    command: ["tensorboard", "--logdir", "/app", "--host", "0.0.0.0", "--port", "6006"]
+
 
