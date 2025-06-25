@@ -3,9 +3,8 @@ Author: Gao Yu
 Company: Bosch Research / Asia Pacific
 Date: 2024-08-03
 Description: training script for stegaformer
-Adapted for Jefferson Rodriguez & ChatGPT
+Mofified by: Jefferson Rodríguez & Gemini - University of Cagliari - 2025-06-25
 """
-
 import os
 import numpy as np
 from torch.utils.data import DataLoader
@@ -237,7 +236,7 @@ start_iteration = load_checkpoint_if_available(
     encoder_scheduler=encoder_scheduler,
     decoder_scheduler=decoder_scheduler,
     save_path=save_path,
-    tag='psnr'  # decide what is better to restore: 'psnr', 'ssim' or 'acc'
+    tag='acc'  # decide what is better to restore: 'psnr', 'ssim' or 'acc'
 )
 
 # restore the training from the last iteration

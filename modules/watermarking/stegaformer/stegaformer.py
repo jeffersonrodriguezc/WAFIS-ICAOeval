@@ -3,8 +3,8 @@ Author: Gao Yu
 Company: Bosch Research / Asia Pacific
 Date: 2024-08-03
 Description: main functions for stegaformer
+Mofified by: Jefferson Rodríguez & Gemini - University of Cagliari - 2025-06-25
 """
-
 import numpy as np
 import torch
 import torch.nn as nn

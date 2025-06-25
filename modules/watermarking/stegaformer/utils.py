@@ -3,9 +3,10 @@ Author: Gao Yu
 Company: Bosch Research / Asia Pacific
 Date: 2024-08-03
 Description: util functions for stegaformer
+Mofified by: Jefferson Rodríguez & Gemini - University of Cagliari - 2025-06-25
 """
-
 import os
+import sqlite3
 from glob import glob
 import numpy as np
 from PIL import Image, ImageOps
@@ -179,6 +180,116 @@ def get_message_accuracy(
 
     return bit_acc
 
+class MIMData_inference(Dataset):
+    """
+    A custom dataset class for handling images and secret messages for inference.
+    """
+    def __init__(
+        self,
+        data_path: str,
+        db_path: str, # Path to the SQLite database containing watermarks
+        num_message: int = 16,
+        message_size: int = 64*64,
+        image_size: tuple = (256, 256),
+        dataset: str = 'facelab_london',
+        roi: str = 'fit',
+        msg_r: int = 1,
+        img_norm: bool = False
+    ):
+        self.data_path = data_path
+        self.db_path = db_path
+        self.m_size = message_size
+        self.m_num = num_message
+        self.im_size = image_size
+        self.roi = roi
+        self.msg_range = msg_r
+        self.image_norm = img_norm
+
+        assert dataset in ['facelab_london', 'CFD', 'ONOT'], "Invalid DataSet. only support ['facelab_london', 'CFD', 'ONOT']."
+        assert roi in ['fit', 'crop'], "Invalid Roi Selection. only support ['fit', 'crop']."
+
+        if dataset == 'facelab_london':
+            self.files_list = glob(os.path.join(self.data_path, '*.jpg'))
+        elif dataset == 'CFD':
+            self.files_list = glob(os.path.join(self.data_path, '*.jpg'))
+        elif dataset == 'ONOT':
+            self.files_list = glob(os.path.join(self.data_path, '*.png'))
+
+        if not self.files_list:
+            raise RuntimeError(f"No image files found in {self.data_path} for dataset {dataset} with specified extension.")
+            
+        self.to_tensor = transforms.ToTensor()
+
+        # Establish SQLite database connection.
+        # This connection will be persistent throughout the dataset's life.
+        self.conn = sqlite3.connect(self.db_path)
+        self.cursor = self.conn.cursor()
+
+    def __getitem__(self, idx: int) -> tuple:
+        img_cover_path = self.files_list[idx]
+        # Extract just the filename (e.g., '001_1_000000.png') to query the database.
+        filename = os.path.basename(img_cover_path) 
+
+        # Load and process the cover image
+        img = Image.open(img_cover_path).convert('RGB')
+        if self.roi == 'fit':
+            img_cover = ImageOps.fit(img, self.im_size)
+        elif self.roi == 'crop':
+            width, height = img.size   # Get dimensions
+            left = (width - self.im_size[0]) / 2
+            top = (height - self.im_size[1]) / 2
+            right = (width + self.im_size[0]) / 2
+            bottom = (height + self.im_size[1]) / 2
+            # Crop the center of the image
+            img_cover = img.crop((left, top, right, bottom))
+
+        if self.image_norm:
+            img_cover = np.array(img_cover, dtype=np.float32) / 255.0
+        else:
+            img_cover = np.array(img_cover, dtype=np.float32)
+
+        img_cover = self.to_tensor(img_cover)
+
+        # --- Load the message (watermark) from the database ---
+        watermark_str = None
+        messages = None # Initialize messages to None or a default zero array
+        
+        try:
+            # Execute SQL query to get the watermark data for the current filename
+            self.cursor.execute("SELECT watermark_data FROM watermarks WHERE image_filename = ?", (filename,))
+            result = self.cursor.fetchone() # Fetch the result
+
+            if result:
+                watermark_str = result[0] # The watermark string is the first element of the result tuple
+            else:
+                # Fallback if watermark is not found for a given filename
+                print(f"Warning: Watermark not found for {filename} in DB. Returning a zero watermark.")
+                # Create a zero-filled watermark of the expected shape (m_num, m_size)
+                messages = np.zeros((self.m_num, self.m_size), dtype=np.float32)
+        except sqlite3.Error as e:
+            # Handle any SQLite database errors during fetching
+            print(f"Database error while fetching watermark for {filename}: {e}. Returning a zero watermark.")
+            messages = np.zeros((self.m_num, self.m_size), dtype=np.float32) # Fallback to zeros
+
+        if watermark_str:
+            # Convert the watermark string ('0101...') to a NumPy array of floats (0.0 or 1.0)
+            messages_flat = np.array(list(watermark_str)).astype(np.float32)
+            # Reshape the flat array to the expected (num_message, message_size) format (e.g., 4096, 16)
+            messages = messages_flat.reshape((self.m_num, self.m_size))
+
+            # Apply normalization to messages if img_norm is true, mirroring MIMData's behavior
+            # Original MIMData: `messages[n, :] = message / (self.msg_range + 1)` if image_norm is True
+            if self.image_norm:
+                messages = messages / (self.msg_range + 1) # Normalizes 0 to 0 and 1 to 0.5 (if msg_range=1)
+
+        # Convert the NumPy message array to a PyTorch tensor (float type)
+        messages = torch.from_numpy(messages).float()
+        
+        return img_cover, messages, filename
+    
+    def __len__(self) -> int:
+        return len(self.files_list)
+
 class MIMData(Dataset):
     """
     A custom dataset class for handling images and secret messages.
@@ -265,24 +376,82 @@ class MIMData(Dataset):
         return len(self.files_list)
 
 if __name__ == '__main__':
-    path = os.path.join('/app/facial_data','celeba_hq','train/real')
-    print(path, 'path')
-    # message r (range) should be 1, 3, 7 for binary, 1, 2, 3-bit per message unit
-    msg_range = 3
-    dataset = MIMData(data_path=path, num_message=64*64, message_size=16, image_size=(256, 256),
-                        dataset='celeba_hq', msg_r=msg_range, img_norm=False)
-    print(f"Dataset size: {len(dataset)}")
-    data_loader = DataLoader(dataset, batch_size=1, shuffle=True)
-    data_iterator = iter(data_loader)
-    img, msg1 = next(data_iterator)
 
-    # check message shape and value
-    print(msg1.shape)
-    print(msg1)
+    # --- Configuration for MIMData (training) ---
+    print("\nTesting MIMData (Training)...")
+    train_data_path = os.path.join('/app/facial_data','celeba_hq','train/real')
+    msg_range = 1  # message r (range) should be 1, 3, 7 for binary, 1, 2, 3-bit per message unit
+    try:
+        train_dataset = MIMData(
+            data_path=train_data_path,
+            num_message=64*64,
+            message_size=16,
+            image_size=(256, 256),
+            dataset='celeba_hq', 
+            msg_r=msg_range,
+            img_norm=False,
+            roi='fit'
+        )
+        train_loader = DataLoader(train_dataset, batch_size=1, shuffle=True)
+        train_iterator = iter(train_loader)
+        img_train, msg_train = next(train_iterator)
 
-    img, msg2 = next(data_iterator)
+        print(f"MIMData: Dataset size: {len(train_dataset)}")
+        print(f"MIMData: Image batch shape: {img_train.shape}")
+        print(f"MIMData: Message batch shape: {msg_train.shape}")
+        print(f"MIMData: Sample message: {msg_train[0].flatten()}")
+    except RuntimeError as e:
+        print(f"Error testing MIMData: {e}")
+    except StopIteration:
+        print("MIMData DataLoader is empty.")
+    except Exception as e:
+        print(f"An unexpected error occurred with MIMData: {e}")
+
+    img2, msg_train2 = next(train_iterator)
     # check the message accuracy
-    acc = get_message_accuracy(msg1, msg1, msg_num=64*64)
+    acc = get_message_accuracy(msg_train, msg_train, msg_num=64*64)
     print(f"Two identity message acc = {acc}")
-    acc = get_message_accuracy(msg1, msg2, msg_num=64*64)
+    acc = get_message_accuracy(msg_train, msg_train2, msg_num=64*64)
     print(f"Random guess of two message in range{msg_range}, acc = {acc}")
+
+    # --- Configuration for MIMData_Inference (default for a quick test) ---
+    print("\nTesting MIMData_Inference (Inference)...")
+    inference_data_path = os.path.join('/app/facial_data','facelab_london', 'processed', 'test')
+    watermark_db_path = os.path.join('/app/facial_data','facelab_london', 'processed','watermarks', 'watermarks_BBP_1_65536_500_facelab_london.db')
+
+    try:
+        inference_dataset = MIMData_inference(
+            data_path=inference_data_path,
+            db_path=watermark_db_path,
+            num_message=4096,  
+            message_size=16,   
+            image_size=(256, 256),
+            dataset='facelab_london',
+            img_norm=False,
+            msg_r=1,  # message range 1--> 0 or 1
+            roi='fit'
+        )
+        inference_loader = DataLoader(inference_dataset, batch_size=1, shuffle=False)
+        inference_iterator = iter(inference_loader)
+        img_inf, msg_inf, _ = next(inference_iterator)
+
+        print(f"MIMData_Inference: Dataset size: {len(inference_dataset)}")
+        print(f"MIMData_Inference: Image batch shape: {img_inf.shape}")
+        print(f"MIMData_Inference: Message batch shape: {msg_inf.shape}")
+        print(f"MIMData_Inference: Sample message: {msg_inf[0].flatten()}")
+    except RuntimeError as e:
+        print(f"Error testing MIMData_Inference: {e}")
+    except StopIteration:
+        print("MIMData_Inference DataLoader is empty.")
+    except sqlite3.Error as e:
+        print(f"Database error with MIMData_Inference: {e}")
+    except Exception as e:
+        print(f"An unexpected error occurred with MIMData_Inference: {e}")
+
+    img2_inf, msg_inf2, _ = next(inference_iterator)
+    # check the message accuracy
+    acc = get_message_accuracy(msg_inf, msg_inf, msg_num=64*64)
+    print(f"Two identity message acc = {acc}")
+    acc = get_message_accuracy(msg_inf, msg_inf2, msg_num=64*64)
+    print(f"Random guess of two message in range{msg_range}, acc = {acc}")
+    
