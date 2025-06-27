@@ -2,7 +2,9 @@
 Author: Jefferson Rodríguez & Gemini - University of Cagliari - 2025-06-25
 """
 import os
+import json
 import argparse
+from datetime import datetime
 from pathlib import Path
 import torch
 from utils import get_message_accuracy, MIMData_inference
@@ -97,7 +99,7 @@ def main() -> None:
     parser.add_argument('--input_dir', type=Path, default=Path('/app/facial_data'))
     parser.add_argument('--dataset', type=str, choices=['facelab_london', 'CFD', 'ONOT'], default='facelab_london')
     parser.add_argument('--db_name', type=str, default='watermarks_BBP_1_65536_500_facelab_london.db')
-    parser.add_argument('--output_dir', type=Path, default=Path('/app/runs/1_1_255_w16_learn_im/'),
+    parser.add_argument('--output_dir', type=Path, default=Path('/app/output/stegaformer/1_1_255_w16_learn_im/'),
                         help='Directory to save the output watermarked images')
     parser.add_argument('--model', type=Path, default=Path('/app/runs/1_1_255_w16_learn_im/celeba_hq/model'),
                         help='Directory containing model checkpoints')
@@ -124,6 +126,7 @@ def main() -> None:
     query_type = args.query
     device_id = args.device
     output_save_dir = args.output_dir / "inference" / f"{args.dataset}"
+    output_save_dir.mkdir(parents=True, exist_ok=True)
 
     # create the encoder and decoder models
     encoder = Encoder(msg_L=message_L, embed_dim=encoder_eb_dim, 
@@ -160,6 +163,37 @@ def main() -> None:
     print(f"Accuracy: {test_message_acc:.4f}")
     print(f"PSNR: {test_psnr:.4f}")
     print(f"SSIM: {test_ssim:.4f}")
+
+
+    # Store the results in a JSON file for Quarto documentation
+    results_data = {
+        "timestamp": datetime.now().isoformat(),
+        "model_name": str(args.output_dir).split('/')[-2],  # Extract the model name from the output directory
+        "training_dataset": str(args.model).split('/')[-2],  # Extract the training dataset name from the model path
+        "inference_dataset": args.dataset,
+        "fine_tuned_icao": False,  # Assuming the model is fine-tuned
+        "OFIQ_score": 0.0,  # Placeholder for OFIQ score
+        "ICAO_compliance": False,  # Placeholder for ICAO compliance
+        "bpp": args.bpp,
+        "watermark_lenght": message_L*message_N,
+        "accuracy": test_message_acc,
+        "psnr": test_psnr,
+        "ssim": test_ssim,
+    }
+
+    # Definir la carpeta de destino para los archivos de resultados de Quarto
+    quarto_results_dir = Path("/app/docs") / "_data" / "watermarking_inference_runs"
+    quarto_results_dir.mkdir(parents=True, exist_ok=True) 
+
+    # Generate a unique filename based on the current timestamp and dataset
+    results_filename = f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    results_filepath = quarto_results_dir / results_filename
+
+    with open(results_filepath, "w") as f:
+        json.dump(results_data, f, indent=2)
+    
+    print(f"Results saved to: {results_filepath}")
+
 
 
 if __name__ == '__main__':

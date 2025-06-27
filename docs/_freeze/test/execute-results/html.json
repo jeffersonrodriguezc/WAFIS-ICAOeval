@@ -1,0 +1,12 @@
+{
+  "hash": "f5297f059bf1b0fee394e90396627d0b",
+  "result": {
+    "engine": "jupyter",
+    "markdown": "---\ntitle: \"Chunk‐Recognition Test\"\nformat:\n  html:\n    execute:\n      enabled: true\n      echo: true\njupyter: python3\n---\n\nEsto es antes del chunk.\n\nprint(\"🎉 Esto con tildes\")\n\n",
+    "supporting": [
+      "test_files"
+    ],
+    "filters": [],
+    "includes": {}
+  }
+}

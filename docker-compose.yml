@@ -10,6 +10,8 @@ services:
               capabilities: [gpu]
     volumes:
       - ./datasets:/app/facial_data:ro
+      - ./experiments/output/watermarking:/app/output:rw
+      - ./docs:/app/docs:rw
       - ./modules/watermarking/stegaformer:/app:rw
     command: ["python", "train.py"]
     profiles: ["train-stegaformer"]
