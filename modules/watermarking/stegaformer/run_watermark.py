@@ -14,6 +14,18 @@ from torchvision.utils import save_image
 
 from stegaformer import Encoder, Decoder
 
+
+def make_output_writable(path):
+    """
+    Make the output directory writable by changing permissions recursively.
+    """
+    for root, dirs, files in os.walk(path):
+        for d in dirs:
+            os.chmod(os.path.join(root, d), 0o777)
+        for f in files:
+            os.chmod(os.path.join(root, f), 0o666)  
+    os.chmod(path, 0o777)
+
 def load_weights(encoder: Encoder, decoder: Decoder, save_path: Path, tag: str = 'acc') -> None:
     """
     Load the model weights from the specified path.
@@ -96,13 +108,11 @@ def inference(inference_loader, encoder, decoder, message_N, device_id, msg_rang
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Embed watermark messages into images")
-    parser.add_argument('--input_dir', type=Path, default=Path('/app/facial_data'))
     parser.add_argument('--dataset', type=str, choices=['facelab_london', 'CFD', 'ONOT'], default='facelab_london')
-    parser.add_argument('--db_name', type=str, default='watermarks_BBP_1_65536_500_facelab_london.db')
-    parser.add_argument('--output_dir', type=Path, default=Path('/app/output/stegaformer/1_1_255_w16_learn_im/'),
-                        help='Directory to save the output watermarked images')
-    parser.add_argument('--model', type=Path, default=Path('/app/runs/1_1_255_w16_learn_im/celeba_hq/model'),
-                        help='Directory containing model checkpoints')
+    parser.add_argument('--db_name', type=str, default='watermarks_BBP_1_65536_500.db')
+    parser.add_argument('--exp_name', type=str, default='1_1_255_w16_learn_im')
+    parser.add_argument('--train_dataset', type=str, default='celeba_hq',
+                        help='Name of the training dataset used for the model')                   
     parser.add_argument('--bpp', type=int, default=1)
     parser.add_argument('--query', type=str, default='im')
     parser.add_argument('--msg_scale', type=int, default=1)
@@ -125,7 +135,11 @@ def main() -> None:
     msg_range = args.msg_range
     query_type = args.query
     device_id = args.device
-    output_save_dir = args.output_dir / "inference" / f"{args.dataset}"
+
+    input_dir = Path('/app/facial_data')
+    model_path = Path(f'/app/runs/{args.exp_name}/{args.train_dataset}/model')
+    base_path = Path('/app/output/stegaformer') / args.exp_name / "inference" / f"{args.dataset}"
+    output_save_dir = base_path / 'watermarked_images'
     output_save_dir.mkdir(parents=True, exist_ok=True)
 
     # create the encoder and decoder models
@@ -145,13 +159,13 @@ def main() -> None:
     load_weights(
     encoder=encoder,
     decoder=decoder,
-    save_path=Path(args.model),
+    save_path=model_path,
     tag='acc'  # decide what is better to restore: 'psnr', 'ssim' or 'acc'
     )
 
     # Test dataloader
-    inference_data_path = os.path.join(args.input_dir,args.dataset, 'processed', 'test')
-    watermark_db_path = os.path.join(args.input_dir,args.dataset, 'processed','watermarks', args.db_name)
+    inference_data_path = os.path.join(input_dir,args.dataset, 'processed', 'test')
+    watermark_db_path = os.path.join(input_dir,args.dataset, 'processed','watermarks', args.db_name)
     test_dataset = MIMData_inference(data_path=inference_data_path, db_path=watermark_db_path, num_message=message_N, message_size=message_L, 
                                      image_size=(im_size, im_size),dataset=args.dataset, msg_r=msg_range)
     
@@ -165,12 +179,13 @@ def main() -> None:
     print(f"SSIM: {test_ssim:.4f}")
 
 
-    # Store the results in a JSON file for Quarto documentation
+    # Store the results in a JSON file 
     results_data = {
         "timestamp": datetime.now().isoformat(),
-        "model_name": str(args.output_dir).split('/')[-2],  # Extract the model name from the output directory
-        "training_dataset": str(args.model).split('/')[-2],  # Extract the training dataset name from the model path
+        "model_name": 'stegaformer',  
+        "training_dataset": args.train_dataset,
         "inference_dataset": args.dataset,
+        "experiment_name": args.exp_name,
         "fine_tuned_icao": False,  # Assuming the model is fine-tuned
         "OFIQ_score": 0.0,  # Placeholder for OFIQ score
         "ICAO_compliance": False,  # Placeholder for ICAO compliance
@@ -181,19 +196,14 @@ def main() -> None:
         "ssim": test_ssim,
     }
 
-    # Definir la carpeta de destino para los archivos de resultados de Quarto
-    quarto_results_dir = Path("/app/docs") / "_data" / "watermarking_inference_runs"
-    quarto_results_dir.mkdir(parents=True, exist_ok=True) 
-
     # Generate a unique filename based on the current timestamp and dataset
-    results_filename = f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-    results_filepath = quarto_results_dir / results_filename
+    results_filepath = base_path / "results_summary.json"
 
     with open(results_filepath, "w") as f:
         json.dump(results_data, f, indent=2)
     
     print(f"Results saved to: {results_filepath}")
-
+    make_output_writable("/app/output")
 
 
 if __name__ == '__main__':

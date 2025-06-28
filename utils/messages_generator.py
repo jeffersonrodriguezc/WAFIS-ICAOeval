@@ -77,7 +77,7 @@ def main(
     BBP = bbp # Assuming message_l=16 y image_size=256x256 -> 16*4096 / (256*256) = 1
     WATERMARK_LENGTH = message_n * (message_l*bbp) # 65536, bbp=1
 
-    output_filename = f"watermarks_BBP_{BBP}_{WATERMARK_LENGTH}_{flip_bits_count}_{dataset_name}.db"
+    output_filename = f"watermarks_BBP_{BBP}_{WATERMARK_LENGTH}_{flip_bits_count}.db"
     output_filepath = os.path.join(output_dir, output_filename)
 
     os.makedirs(output_dir, exist_ok=True)
@@ -138,7 +138,7 @@ def main(
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Generate user-specific watermarks for a dataset.')
-    parser.add_argument('--data_root', type=str, default='datasets',
+    parser.add_argument('--data_root', type=str, default='../datasets',
                         help='Root folder containing the dataset (e.g., "datasets").')
     parser.add_argument('--dataset_name', type=str, default='facelab_london',
                         help='Dataset name (e.g., "facelab_london").')

@@ -10,20 +10,53 @@ services:
               capabilities: [gpu]
     volumes:
       - ./datasets:/app/facial_data:ro
-      - ./experiments/output/watermarking:/app/output:rw
-      - ./docs:/app/docs:rw
       - ./modules/watermarking/stegaformer:/app:rw
     command: ["python", "train.py"]
     profiles: ["train-stegaformer"]
 
-  stegaformer_embed:
-    build: ./modules/watermarking/stegaformer
+  stegaformer_watermarking:
+    image: wafis-icaoeval-stegaformer_train:latest
+    container_name: stegaformer_watermarking_service
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     volumes:
-      - ./datasets/processed:/data/in:ro
-      - ./experiments/output:/data/out:rw
-      - ./modules/watermarking/stegaformer/model:/app/model:ro
-    command: ["python", "run_watermark.py", "--input_dir", "/data/in", "--output_dir", "/data/out", "--model", "model/stegaformer.pth"]
-    profiles: ["infer"]
+      - ./datasets:/app/facial_data:ro
+      - ./experiments/output/watermarking:/app/output:rw
+      - ./modules/watermarking/stegaformer:/app:rw
+    entrypoint: ["python", "run_watermark.py"]
+    command: "python run_watermark.py $@"
+    profiles: ["inference"]
+
+  facenet_recognizer:
+    image: timesler/jupyter-dl-gpu:latest
+    container_name: facenet_recognizer_service
+    working_dir: /app
+    volumes:
+      - ./datasets:/app/facial_data:ro
+      - ./experiments/output:/app/output:rw
+      - ./modules/recognition/facenet/run_recognizer.py:/app/run_recognizer.py:ro
+      - ./modules/recognition/facenet/recognizer.py:/app/recognizer.py:ro
+      - ./modules/recognition/facenet/test_similarity.py:/app/test_similarity.py:ro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    entrypoint:
+    - bash
+    - -c
+    - |
+      pip install -q facenet_pytorch scipy pandas ipython && \
+      exec python run_recognizer.py "$@"
+    - --
+    profiles: ["facenet"]
 
   tensorboard_viewer:
     image: tensorflow/tensorflow:2.13.0
