@@ -52,3 +52,6 @@ Thumbs.db
 *.sock
 
 /.luarc.json
+
+# Quarto
+**/_site/
