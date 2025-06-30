@@ -94,7 +94,7 @@ ul.task-list li input[type="checkbox"] {
 <span class="menu-text">Home</span></a>
   </li>  
   <li class="nav-item">
-    <a class="nav-link" href="./Results.qmd"> 
+    <a class="nav-link active" href="./results.html" aria-current="page"> 
 <span class="menu-text">Results</span></a>
   </li>  
   <li class="nav-item">
@@ -137,37 +137,74 @@ ul.task-list li input[type="checkbox"] {
 </header>
 
 
-<div id="results-table">
-
+<hr>
+<h3 class="anchored">
+Experiment: 1
+</h3>
+<h4 class="anchored">
+Main Metrics
+</h4>
+<table class="table" <thead=""><tbody><tr><th>Date</th><th>Model</th><th>Train DS</th><th>Inf. DS</th><th>BPP</th><th>WM Len.</th><th>Acc.</th><th>PSNR</th><th>SSIM</th><th>Dist. Gen. Before</th><th>Dist. Imp. Before</th><th>Dist. Gen. After</th><th>Dist. Imp. After</th></tr></tbody><tbody><tr><td>2025-06-28</td><td>stegaformer</td><td>celeba_hq</td><td>CFD</td><td>1</td><td>65536</td><td>0.8925</td><td>45.8131</td><td>0.9861</td><td>0.0000</td><td>0.9225</td><td>0.0209</td><td>0.9212</td></tr></tbody></table>
+<h4 class="anchored">
+Experiment Details
+</h4>
+<details>
+<summary>
+Click to show/hide details
+</summary>
+<div>
+<p>
+<strong>Distance Metric:</strong> Cosine Distance
+</p>
+<p>
+<strong>Experiment Name:</strong> 1_1_255_w16_learn_im
+</p>
+<p>
+<strong>Fine-Tuned ICAO:</strong> False
+</p>
+<p>
+<strong>OFIQ Score:</strong> 0.0
+</p>
+<p>
+<strong>ICAO Compliance:</strong> False
+</p>
 </div>
-<script>
-// 1) Carga el JSON
-fetch("/_data/run_20250626_120752.json")
-  .then(r => r.json())
-  .then(data => {
-    // 2) Construye la tabla
-    const cols = [
-      "timestamp","model_name","training_dataset","inference_dataset",
-      "fine_tuned_icao","OFIQ_score","ICAO_compliance",
-      "bpp","watermark_lenght","accuracy","psnr","ssim"
-    ];
-    let html = "<table class='table table-striped table-hover'><thead><tr>"
-      + cols.map(c => `<th>${c}</th>`).join("") +
-      "</tr></thead><tbody>";
-    for (let row of data) {
-      html += "<tr>" + cols.map(c=>{
-        let v = row[c] ?? "";
-        return `<td>${v}</td>`;
-      }).join("") + "</tr>";
-    }
-    html += "</tbody></table>";
-    document.getElementById("results-table").innerHTML = html;
-  })
-  .catch(e => {
-    document.getElementById("results-table")
-      .innerHTML = `<p style="color:red">Error cargando datos: ${e}</p>`;
-  });
-</script>
+</details>
+<br>
+<hr>
+<h3 class="anchored">
+Experiment: 2
+</h3>
+<h4 class="anchored">
+Main Metrics
+</h4>
+<table class="table" <thead=""><tbody><tr><th>Date</th><th>Model</th><th>Train DS</th><th>Inf. DS</th><th>BPP</th><th>WM Len.</th><th>Acc.</th><th>PSNR</th><th>SSIM</th><th>Dist. Gen. Before</th><th>Dist. Imp. Before</th><th>Dist. Gen. After</th><th>Dist. Imp. After</th></tr></tbody><tbody><tr><td>2025-06-28</td><td>stegaformer</td><td>celeba_hq</td><td>facelab_london</td><td>1</td><td>65536</td><td>0.9096</td><td>46.5275</td><td>0.9839</td><td>0.0000</td><td>0.9499</td><td>0.0264</td><td>0.9500</td></tr></tbody></table>
+<h4 class="anchored">
+Experiment Details
+</h4>
+<details>
+<summary>
+Click to show/hide details
+</summary>
+<div>
+<p>
+<strong>Distance Metric:</strong> Cosine Distance
+</p>
+<p>
+<strong>Experiment Name:</strong> 1_1_255_w16_learn_im
+</p>
+<p>
+<strong>Fine-Tuned ICAO:</strong> False
+</p>
+<p>
+<strong>OFIQ Score:</strong> 0.0
+</p>
+<p>
+<strong>ICAO Compliance:</strong> False
+</p>
+</div>
+</details>
+<p><br></p>
 
 
 

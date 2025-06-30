@@ -1,10 +1,10 @@
 [
   {
-    "objectID": "index.html",
-    "href": "index.html",
-    "title": "docs",
+    "objectID": "results.html",
+    "href": "results.html",
+    "title": "Evaluation Results",
     "section": "",
-    "text": "This is a Quarto website.\nTo learn more about Quarto websites visit https://quarto.org/docs/websites."
+    "text": "Experiment: 1\n\n\nMain Metrics\n\nDateModelTrain DSInf. DSBPPWM Len.Acc.PSNRSSIMDist. Gen. BeforeDist. Imp. BeforeDist. Gen. AfterDist. Imp. After2025-06-28stegaformerceleba_hqCFD1655360.892545.81310.98610.00000.92250.02090.9212\n\nExperiment Details\n\n\n\nClick to show/hide details\n\n\n\nDistance Metric: Cosine Distance\n\n\nExperiment Name: 1_1_255_w16_learn_im\n\n\nFine-Tuned ICAO: False\n\n\nOFIQ Score: 0.0\n\n\nICAO Compliance: False\n\n\n\n\n\n\nExperiment: 2\n\n\nMain Metrics\n\nDateModelTrain DSInf. DSBPPWM Len.Acc.PSNRSSIMDist. Gen. BeforeDist. Imp. BeforeDist. Gen. AfterDist. Imp. After2025-06-28stegaformerceleba_hqfacelab_london1655360.909646.52750.98390.00000.94990.02640.9500\n\nExperiment Details\n\n\n\nClick to show/hide details\n\n\n\nDistance Metric: Cosine Distance\n\n\nExperiment Name: 1_1_255_w16_learn_im\n\n\nFine-Tuned ICAO: False\n\n\nOFIQ Score: 0.0\n\n\nICAO Compliance: False"
   },
   {
     "objectID": "about.html",
@@ -14,17 +14,10 @@
     "text": "About this site"
   },
   {
-    "objectID": "results.html",
-    "href": "results.html",
-    "title": "Evaluation Results",
+    "objectID": "index.html",
+    "href": "index.html",
+    "title": "docs",
     "section": "",
-    "text": "import json import pandas as pd from pathlib import Path\nresults_folder = Path(“_data”) / “watermarking_inference_runs”\nall_runs_data = [] if results_folder.exists(): for file in results_folder.glob(“*.json”): with open(file, “r”) as f: all_runs_data.append(json.load(f)) if all_runs_data: df = pd.DataFrame(all_runs_data) # Seleccionar y reordenar columnas para la tabla df = df[[ “timestamp”, “model_name”, “training_dataset”, “inference_dataset”, “fine_tuned_icao”, “OFIQ_score”, “ICAO_compliance”, “bpp”, “watermark_lenght”,“accuracy”, “psnr”, “ssim”, ]] # Format numeric columns df[“accuracy”] = df[“accuracy”].map(“{:.4f}”.format) df[“psnr”] = df[“psnr”].map(“{:.2f}”.format) df[“ssim”] = df[“ssim”].map(“{:.4f}”.format) df[“timestamp”] = df[“timestamp”].str.replace(“T”, ” “).str[:19] # Formato más legible\nprint(df.to_html(index=False, classes=\"table table-striped table-hover\"))\nelse: print(“\n\nThere are no results to display.\n\n“)"
-  },
-  {
-    "objectID": "test.html",
-    "href": "test.html",
-    "title": "Chunk‐Recognition Test",
-    "section": "",
-    "text": "Esto es antes del chunk.\nprint(“🎉 Esto con tildes”)"
+    "text": "This is a Quarto website.\nTo learn more about Quarto websites visit https://quarto.org/docs/websites."
   }
 ]

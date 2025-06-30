@@ -1,0 +1,44 @@
+[
+  {
+    "timestamp": "2025-06-28T11:11:55.561404",
+    "model_name": "stegaformer",
+    "training_dataset": "celeba_hq",
+    "inference_dataset": "CFD",
+    "experiment_name": "1_1_255_w16_learn_im",
+    "fine_tuned_icao": false,
+    "OFIQ_score": 0.0,
+    "ICAO_compliance": false,
+    "bpp": 1,
+    "watermark_lenght": 65536,
+    "accuracy": 0.8925320429679675,
+    "psnr": 45.81306475859422,
+    "ssim": 0.9861160155672294,
+    "average_distances": {
+      "avg_dist_cosine_genuine_before_watermark": 0.0,
+      "avg_dist_cosine_impostor_before_watermark": 0.9224513062850932,
+      "avg_dist_cosine_genuine_after_watermark": 0.02087430250543781,
+      "avg_dist_cosine_impostor_after_watermark": 0.921207531059186
+    }
+  },
+  {
+    "timestamp": "2025-06-28T11:12:43.273142",
+    "model_name": "stegaformer",
+    "training_dataset": "celeba_hq",
+    "inference_dataset": "facelab_london",
+    "experiment_name": "1_1_255_w16_learn_im",
+    "fine_tuned_icao": false,
+    "OFIQ_score": 0.0,
+    "ICAO_compliance": false,
+    "bpp": 1,
+    "watermark_lenght": 65536,
+    "accuracy": 0.909615003145658,
+    "psnr": 46.527544461763824,
+    "ssim": 0.983869907947687,
+    "average_distances": {
+      "avg_dist_cosine_genuine_before_watermark": 0.0,
+      "avg_dist_cosine_impostor_before_watermark": 0.9498777532989098,
+      "avg_dist_cosine_genuine_after_watermark": 0.02636776835310693,
+      "avg_dist_cosine_impostor_after_watermark": 0.9500016552572222
+    }
+  }
+]
