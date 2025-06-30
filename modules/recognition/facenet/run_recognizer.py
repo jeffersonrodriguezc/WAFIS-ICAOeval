@@ -177,10 +177,10 @@ def main() -> None:
             results_data = json.load(f)
         # Add the average distances to the results data
         results_data['average_distances'] = {
-            f'avg_dist_{args.metric}_genuine_before_watermark': avg_genuine_distance_before_watermark,
-            f'avg_dist_{args.metric}_impostor_before_watermark': avg_impostor_distance_before_watermark,
-            f'avg_dist_{args.metric}_genuine_after_watermark': avg_genuine_distance_watermarked,
-            f'avg_dist_{args.metric}_impostor_after_watermark': avg_impostor_distance_watermarked
+            f'facenet_avg_dist_{args.metric}_genuine_before_watermark': avg_genuine_distance_before_watermark,
+            f'facenet_avg_dist_{args.metric}_impostor_before_watermark': avg_impostor_distance_before_watermark,
+            f'facenet_avg_dist_{args.metric}_genuine_after_watermark': avg_genuine_distance_watermarked,
+            f'facenet_avg_dist_{args.metric}_impostor_after_watermark': avg_impostor_distance_watermarked
         }
 
         # Save the updated results data back to the file

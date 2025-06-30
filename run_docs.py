@@ -4,6 +4,7 @@
 The script searches for ``results_summary.json`` files and converts them
 into an HTML structure with a main table that spans full width and
 collapsible experiment details using native HTML <details>/<summary> tags.
+It includes the facial recognition algorithm in the details.
 """
 
 from __future__ import annotations
@@ -70,15 +71,18 @@ def summaries_to_html_plain(summaries: list[dict]) -> str:
         {"key": "accuracy", "header": "Acc."},
         {"key": "psnr", "header": "PSNR"},
         {"key": "ssim", "header": "SSIM"},
-        {"key": "average_distances.avg_dist_cosine_genuine_before_watermark", "header": "Dist. Gen. Before"},
-        {"key": "average_distances.avg_dist_cosine_impostor_before_watermark", "header": "Dist. Imp. Before"},
-        {"key": "average_distances.avg_dist_cosine_genuine_after_watermark", "header": "Dist. Gen. After"},
-        {"key": "average_distances.avg_dist_cosine_impostor_after_watermark", "header": "Dist. Imp. After"},
+        # Distance metrics - now with 'facenet_' prefix in keys
+        {"key": "average_distances.facenet_avg_dist_cosine_genuine_before_watermark", "header": "Dist. Gen. Before"},
+        {"key": "average_distances.facenet_avg_dist_cosine_impostor_before_watermark", "header": "Dist. Imp. Before"},
+        {"key": "average_distances.facenet_avg_dist_cosine_genuine_after_watermark", "header": "Dist. Gen. After"},
+        {"key": "average_distances.facenet_avg_dist_cosine_impostor_after_watermark", "header": "Dist. Imp. After"},
     ]
 
     # --- Configuration for Details (collapsible) content ---
+    # Added "facial_recognition_algorithm"
     details_content_config = {
         "experiment_name": "Experiment Name",
+        "facial_recognition_algorithm": "Face Rec. Algorithm",
         "fine_tuned_icao": "Fine-Tuned ICAO",
         "OFIQ_score": "OFIQ Score",
         "ICAO_compliance": "ICAO Compliance",
@@ -88,10 +92,10 @@ def summaries_to_html_plain(summaries: list[dict]) -> str:
     # Numeric keys to round (used by format_cell_value)
     numeric_keys_to_round = {
         "accuracy", "psnr", "ssim",
-        "avg_dist_cosine_genuine_before_watermark",
-        "avg_dist_cosine_impostor_before_watermark",
-        "avg_dist_cosine_genuine_after_watermark",
-        "avg_dist_cosine_impostor_after_watermark",
+        "facenet_avg_dist_cosine_genuine_before_watermark", # Updated key names
+        "facenet_avg_dist_cosine_impostor_before_watermark", # Updated key names
+        "facenet_avg_dist_cosine_genuine_after_watermark", # Updated key names
+        "facenet_avg_dist_cosine_impostor_after_watermark", # Updated key names
     }
 
     for idx, row_data in enumerate(summaries):
@@ -110,28 +114,47 @@ def summaries_to_html_plain(summaries: list[dict]) -> str:
         for col_config in main_table_columns_config:
             key = col_config["key"]
             value = 'N/A' 
-            if '.' in key:
+            if '.' in key: # Handles nested keys like "average_distances.facenet_avg_dist_..."
                 main_key, sub_key = key.split('.', 1)
                 nested_dict = row_data.get(main_key, {})
                 value = nested_dict.get(sub_key, 'N/A')
-            else:
+            else: # Handles top-level keys
                 value = row_data.get(key, 'N/A')
             
-            is_numeric_for_rounding = key.split('.')[-1] in numeric_keys_to_round
+            # Use the full key from config to check if it's numeric for rounding
+            is_numeric_for_rounding = key.split('.')[-1] in numeric_keys_to_round 
             main_cells_data.append(f"<td>{format_cell_value(value, is_numeric_col=is_numeric_for_rounding)}</td>")
         
         all_experiments_html.append("<h4>Main Metrics</h4>")
-        # CAMBIO CLAVE AQUÍ: Usamos style='width:100%; table-layout: fixed;'
-        # Esto le da la mayor prioridad para ocupar el 100% del contenedor padre.
-        all_experiments_html.append("<table class='table'")
+        all_experiments_html.append("<table class='table'") 
         all_experiments_html.append(f"<thead>{main_header_row}</thead>")
         all_experiments_html.append(f"<tbody><tr>{''.join(main_cells_data)}</tr></tbody>")
         all_experiments_html.append("</table>")
 
         # --- Generate Collapsible Experiment Details ---
         details_html_content = []
+        
+        # Determine Facial Recognition Algorithm from the distance keys
+        # We assume if any facenet key exists, the algorithm is Facenet
+        facial_rec_algo = "N/A"
+        if row_data.get("average_distances"):
+            for dist_key in row_data["average_distances"].keys():
+                if dist_key.startswith("facenet_"):
+                    facial_rec_algo = "Facenet"
+                    break
+                elif dist_key.startswith("arcface"):
+                    facial_rec_algo = "ArcFace"
+                    break
+                else:
+                    facial_rec_algo = "Unknown" 
+
         details_html_content.append(f"<p><strong>Distance Metric:</strong> {escape(distance_metric_type)}</p>")
+        details_html_content.append(f"<p><strong>Face Rec. Algorithm:</strong> {escape(facial_rec_algo)}</p>") # NEW LINE
+        
         for key, display_name in details_content_config.items():
+            if key == "facial_recognition_algorithm": # Skip, handled above
+                continue
+            
             value = row_data.get(key, 'N/A')
             is_numeric_for_rounding = key in numeric_keys_to_round
             details_html_content.append(f"<p><strong>{escape(display_name)}:</strong> {format_cell_value(value, is_numeric_col=is_numeric_for_rounding)}</p>")

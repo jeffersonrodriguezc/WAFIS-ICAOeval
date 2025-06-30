@@ -14,10 +14,10 @@
     "psnr": 45.81306475859422,
     "ssim": 0.9861160155672294,
     "average_distances": {
-      "avg_dist_cosine_genuine_before_watermark": 0.0,
-      "avg_dist_cosine_impostor_before_watermark": 0.9224513062850932,
-      "avg_dist_cosine_genuine_after_watermark": 0.02087430250543781,
-      "avg_dist_cosine_impostor_after_watermark": 0.921207531059186
+      "facenet_avg_dist_cosine_genuine_before_watermark": 0.0,
+      "facenet_avg_dist_cosine_impostor_before_watermark": 0.9224513062850932,
+      "facenet_avg_dist_cosine_genuine_after_watermark": 0.02087430250543781,
+      "facenet_avg_dist_cosine_impostor_after_watermark": 0.921207531059186
     }
   },
   {
@@ -35,10 +35,10 @@
     "psnr": 46.527544461763824,
     "ssim": 0.983869907947687,
     "average_distances": {
-      "avg_dist_cosine_genuine_before_watermark": 0.0,
-      "avg_dist_cosine_impostor_before_watermark": 0.9498777532989098,
-      "avg_dist_cosine_genuine_after_watermark": 0.02636776835310693,
-      "avg_dist_cosine_impostor_after_watermark": 0.9500016552572222
+      "facenet_avg_dist_cosine_genuine_before_watermark": 0.0,
+      "facenet_avg_dist_cosine_impostor_before_watermark": 0.9498777532989098,
+      "facenet_avg_dist_cosine_genuine_after_watermark": 0.02636776835310693,
+      "facenet_avg_dist_cosine_impostor_after_watermark": 0.9500016552572222
     }
   }
 ]
