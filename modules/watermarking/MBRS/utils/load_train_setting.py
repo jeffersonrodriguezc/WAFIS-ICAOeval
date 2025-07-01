@@ -13,6 +13,7 @@ only_decoder = settings.only_decoder
 
 project_name = settings.project_name
 dataset_path = settings.dataset_path
+dataset_train = settings.dataset_train
 epoch_number = settings.epoch_number
 batch_size = settings.batch_size
 train_continue = settings.train_continue
@@ -26,13 +27,15 @@ noise_layers = settings.noise_layers
 '''
 file preparing
 '''
-full_project_name = project_name + "_m" + str(message_length)
-for noise in noise_layers:
-	full_project_name += "_" + noise
-result_folder = "results/" + time.strftime(full_project_name + "__%Y_%m_%d__%H_%M_%S", time.localtime()) + "/"
-if not os.path.exists(result_folder): os.mkdir(result_folder)
-if not os.path.exists(result_folder + "images/"): os.mkdir(result_folder + "images/")
-if not os.path.exists(result_folder + "models/"): os.mkdir(result_folder + "models/")
+full_project_name = project_name + '_' + str(H) +"_m" + str(message_length)
+#for noise in noise_layers:
+#	full_project_name += "_" + noise
+
+result_folder = "runs/" + time.strftime(full_project_name + "__%Y_%m_%d__%H_%M_%S", time.localtime()) + "/" + dataset_train + "/"
+if not os.path.exists(result_folder): os.makedirs(result_folder)
+if not os.path.exists(result_folder + "samples/"): os.makedirs(result_folder + "samples/")
+if not os.path.exists(result_folder + "model/"): os.makedirs(result_folder + "model/")
+
 with open(result_folder + "/train_params.txt", "w") as file:
 	content = "-----------------------" + time.strftime("Date: %Y/%m/%d %H:%M:%S",
 														time.localtime()) + "-----------------------\n"
@@ -42,6 +45,7 @@ with open(result_folder + "/train_params.txt", "w") as file:
 
 	print(content)
 	file.write(content)
+
 with open(result_folder + "/train_log.txt", "w") as file:
 	content = "-----------------------" + time.strftime("Date: %Y/%m/%d %H:%M:%S",
 														time.localtime()) + "-----------------------\n"

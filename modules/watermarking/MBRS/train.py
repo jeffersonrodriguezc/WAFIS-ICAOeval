@@ -1,7 +1,8 @@
 from torch.utils.data import DataLoader
-from torch.utils.tensorboard import SummaryWriter
 from utils import *
+from tqdm import tqdm
 from network.Network import *
+import torch
 
 from utils.load_train_setting import *
 
@@ -9,24 +10,30 @@ from utils.load_train_setting import *
 train
 '''
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+#device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+#device = torch.device("cuda:0")
+torch.backends.cudnn.enabled = False
+device = torch.device("cpu")
+print("Device: ", device)
 
+print("Creating network...")
 network = Network(H, W, message_length, noise_layers, device, batch_size, lr, with_diffusion, only_decoder)
 
-train_dataset = MBRSDataset(os.path.join(dataset_path, "train"), H, W)
+print("Creating datasets...")
+train_dataset = MBRSDataset(os.path.join(dataset_path, dataset_train, "train", "real"), H, W)
 train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=0, pin_memory=True)
 
-val_dataset = MBRSDataset(os.path.join(dataset_path, "validation"), H, W)
+val_dataset = MBRSDataset(os.path.join(dataset_path, dataset_train, "val", "real"), H, W)
 val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=True)
 
 if train_continue:
-	EC_path = "results/" + train_continue_path + "/models/EC_" + str(train_continue_epoch) + ".pth"
-	D_path = "results/" + train_continue_path + "/models/D_" + str(train_continue_epoch) + ".pth"
+	EC_path = result_folder + "/model/EC_" + str(train_continue_epoch) + ".pth"
+	D_path = result_folder + "/model/D_" + str(train_continue_epoch) + ".pth"
 	network.load_model(EC_path, D_path)
 
 print("\nStart training : \n\n")
 
-for epoch in range(epoch_number):
+for epoch in tqdm(range(epoch_number)):
 
 	epoch += train_continue_epoch if train_continue else 0
 
@@ -110,7 +117,7 @@ for epoch in range(epoch_number):
 			else:
 				saved_all = concatenate_images(saved_all, image, encoded_images, noised_images)
 
-	save_images(saved_all, epoch, result_folder + "images/", resize_to=(W, H))
+	save_images(saved_all, epoch, result_folder + "samples/", resize_to=(W, H))
 
 	'''
 	validation results
@@ -127,7 +134,7 @@ for epoch in range(epoch_number):
 	'''
 	save model
 	'''
-	path_model = result_folder + "models/"
+	path_model = result_folder + "model/"
 	path_encoder_decoder = path_model + "EC_" + str(epoch) + ".pth"
 	path_discriminator = path_model + "D_" + str(epoch) + ".pth"
 	network.save_model(path_encoder_decoder, path_discriminator)

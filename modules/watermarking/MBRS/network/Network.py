@@ -17,8 +17,9 @@ class Network:
 
 		self.discriminator = Discriminator().to(device)
 
-		self.encoder_decoder = torch.nn.DataParallel(self.encoder_decoder)
-		self.discriminator = torch.nn.DataParallel(self.discriminator)
+		#if not self.device == 'cpu':
+		#	self.encoder_decoder = torch.nn.DataParallel(self.encoder_decoder)
+		#	self.discriminator = torch.nn.DataParallel(self.discriminator)
 
 		if only_decoder:
 			for p in self.encoder_decoder.module.encoder.parameters():
@@ -35,8 +36,8 @@ class Network:
 		self.opt_discriminator = torch.optim.Adam(self.discriminator.parameters(), lr=lr)
 
 		# loss function
-		self.criterion_BCE = nn.BCEWithLogitsLoss().to(device)
-		self.criterion_MSE = nn.MSELoss().to(device)
+		self.criterion_BCE = nn.BCEWithLogitsLoss().to(self.device)
+		self.criterion_MSE = nn.MSELoss().to(self.device)
 
 		# weight of encoder-decoder loss
 		self.discriminator_weight = 0.0001
