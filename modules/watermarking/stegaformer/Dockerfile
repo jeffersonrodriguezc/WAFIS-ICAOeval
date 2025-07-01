@@ -14,5 +14,5 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 RUN mkdir -p /app/model
 
-CMD ["python", "run_watermark.py", "--input_dir", "/data/in", "--output_dir", "/data/out", "--model", "model/stegaformer.pth"]
+CMD ["tail", "-f", "/dev/null"]
 

@@ -30,7 +30,43 @@ services:
       - ./modules/watermarking/stegaformer:/app:rw
     entrypoint: ["python", "run_watermark.py"]
     command: "python run_watermark.py $@"
-    profiles: ["inference"]
+    profiles: ["inference-stegaformer"]
+
+  mbrs_train:
+    build: ./modules/watermarking/MBRS
+    container_name: MBRS_training_service
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia 
+              count: all   
+              capabilities: [gpu] 
+    volumes:
+      - ./datasets:/app/facial_data:ro
+      - ./modules/watermarking/MBRS:/app:rw
+
+    command: ["python", "train.py"]
+    profiles: ["train-mbrs"]
+
+  mbrs_watermarking:
+    image: wafis-icaoeval-mbrs_train:latest
+    container_name: mbrs_inference_service
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    volumes:
+      - ./datasets:/app/facial_data:ro
+      - ./experiments/output/watermarking:/app/output:rw
+      - ./modules/watermarking/MBRS:/app:rw
+
+    entrypoint: ["python", "run_watermark.py"]
+    command: "python run_watermark.py $@"
+    profiles: ["inference-mbrs"]
 
   facenet_recognizer:
     image: timesler/jupyter-dl-gpu:latest
