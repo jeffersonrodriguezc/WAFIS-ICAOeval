@@ -11,9 +11,9 @@ train
 '''
 
 #device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-#device = torch.device("cuda:0")
-torch.backends.cudnn.enabled = False
-device = torch.device("cpu")
+device = torch.device("cuda")
+#torch.backends.cudnn.enabled = False
+#device = torch.device("cpu")
 print("Device: ", device)
 
 print("Creating network...")

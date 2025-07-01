@@ -18,8 +18,8 @@ class Network:
 		self.discriminator = Discriminator().to(device)
 
 		#if not self.device == 'cpu':
-		#	self.encoder_decoder = torch.nn.DataParallel(self.encoder_decoder)
-		#	self.discriminator = torch.nn.DataParallel(self.discriminator)
+		self.encoder_decoder = torch.nn.DataParallel(self.encoder_decoder)
+		self.discriminator = torch.nn.DataParallel(self.discriminator)
 
 		if only_decoder:
 			for p in self.encoder_decoder.module.encoder.parameters():
