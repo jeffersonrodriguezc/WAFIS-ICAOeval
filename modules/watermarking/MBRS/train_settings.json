@@ -1,10 +1,14 @@
 {
   "project_name": "MBRS",
+  "experiment_name": "MBRS_256_m65536__2025_07_02__06_39_00",
   "with_diffusion": false,
   "only_decoder": false,
-  "epoch_number": 101,
-  "batch_size": 2,
-  "train_continue": false,
+  "epoch_number": 1,
+  "SAVE_EVERY_N_STEPS": 250,
+  "VALIDATE_EVERY_N_STEPS": 500,
+  "train_continue_step": 1749,
+  "batch_size": 4,
+  "train_continue": true,
   "train_continue_path": "/",
   "train_continue_epoch": 0,
   "dataset_path": "facial_data/",
@@ -13,7 +17,7 @@
   "W": 256,
   "message_length": 65536,
   "strength_factor": 1,
-  "lr": 1e-4,
+  "lr": 1e-3,
   "dataset_train": "celeba_hq",
   "noise_layers": [
     "Combined([JpegMask(50),Jpeg(50),Identity()])"

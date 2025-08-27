@@ -96,7 +96,8 @@ class Network:
 			psnr = kornia.losses.psnr_loss(encoded_images.detach(), images, 2)
 
 			# ssim
-			ssim = 1 - 2 * kornia.losses.ssim(encoded_images.detach(), images, window_size=5, reduction="mean")
+			#ssim = 1 - 2 * kornia.losses.ssim(encoded_images.detach(), images, window_size=5, reduction="mean")
+			ssim = 1 - 2 * kornia.losses.ssim_loss(encoded_images.detach(), images, window_size=5, reduction="mean")
 
 		'''
 		decoded message error rate
@@ -139,7 +140,8 @@ class Network:
 			psnr = kornia.losses.psnr_loss(encoded_images.detach(), images, 2)
 
 			# ssim
-			ssim = 1 - 2 * kornia.losses.ssim(encoded_images.detach(), images, window_size=5, reduction="mean")
+			#ssim = 1 - 2 * kornia.losses.ssim(encoded_images.detach(), images, window_size=5, reduction="mean") 
+			ssim = 1 - 2 * kornia.losses.ssim_loss(encoded_images.detach(), images, window_size=5, reduction="mean")
 
 		'''
 		decoded message error rate
@@ -201,7 +203,8 @@ class Network:
 			psnr = kornia.losses.psnr_loss(encoded_images.detach(), images, 2)
 
 			# ssim
-			ssim = 1 - 2 * kornia.losses.ssim(encoded_images.detach(), images, window_size=5, reduction="mean")
+			#ssim = 1 - 2 * kornia.losses.ssim(encoded_images.detach(), images, window_size=5, reduction="mean") 
+			ssim = 1 - 2 * kornia.losses.ssim_loss(encoded_images.detach(), images, window_size=5, reduction="mean") 
 
 		'''
 		decoded message error rate
