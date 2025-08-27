@@ -1,6 +1,8 @@
 import argparse
 from PIL import Image, ImageOps
+
 from recognizer import FaceNetRecognizer
+
 
 def apply_roi_transform(img, roi_type='fit', img_size=256):
     if roi_type == 'fit':
@@ -23,9 +25,10 @@ def main():
     parser.add_argument("--device", type=str, default="cpu")
     args = parser.parse_args()
 
-
-    original_path = '/app/facial_data/CFD/processed/test/AF253_130_N.jpg'
-    watermarked_path = '/app/output/watermarking/stegaformer/1_1_255_w16_learn_im/inference/CFD/watermarked_images/AF253_130_N.jpg' 
+    dataset_name = 'CFD'
+    sample = 'AF253_130_N.jpg'
+    original_path = f'/app/facial_data/{dataset_name}/processed/test/{sample}'
+    watermarked_path = f'/app/output/watermarking/stegaformer/1_2_255_w16_learn_im/inference/{dataset_name}/watermarked_images/{sample}' 
 
     recognizer = FaceNetRecognizer(device=args.device)
 

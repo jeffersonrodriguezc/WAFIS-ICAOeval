@@ -58,6 +58,7 @@ def main(
     message_l: int, # message_size (e.g., 16*bpp)
     flip_bits_count: int, # number of bits to flip for user-specific watermark
     bbp: int = 1, # bits per pixel, assuming bpp=1
+    msg_range: int = 1,
     overwrite_existing: bool = False
 ):
     """
@@ -90,7 +91,7 @@ def main(
     # Generate a global base watermark with a fixed seed
     # This will be the base watermark that is perturbed for each user
     global_base_rng = np.random.default_rng(seed=42) # Fixed seed for reproducibility
-    global_base_watermark = global_base_rng.integers(low=0, high=2, size=WATERMARK_LENGTH)
+    global_base_watermark = global_base_rng.integers(low=0, high=msg_range+1, size=WATERMARK_LENGTH)
 
     # Dicctionary to store user-specific watermarks
     user_watermarks_map = {} # {user_id: np.ndarray(65536)}
@@ -148,6 +149,9 @@ if __name__ == '__main__':
                         help='Lenght of each segment of the message.')
     parser.add_argument('--flip_bits_count', type=int, default=500,
                         help='Number of bits to flip in the watermark for user-specific perturbation.')
+    parser.add_argument('--bbp', type=int, default=1,
+                        help='Bits per pixel (bpp) for the watermark, assuming bpp=1.')
+    parser.add_argument('--msg_range', type=int, default=1)
     parser.add_argument('--overwrite', action='store_true',
                         help='OVerwrite existing watermark database if it exists.')
 
@@ -159,5 +163,7 @@ if __name__ == '__main__':
         message_n=args.message_n,
         message_l=args.message_l,
         flip_bits_count=args.flip_bits_count,
+        bbp=args.bbp,
+        msg_range=args.msg_range,
         overwrite_existing=args.overwrite
     )

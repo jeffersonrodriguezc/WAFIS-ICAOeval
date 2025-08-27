@@ -4,7 +4,7 @@ import os
 import argparse
 from pathlib import Path
 
-def check_uniqueness_and_count(db_path: str) -> None:
+def check_uniqueness_and_count(db_path: str, bpp: int = 1) -> None:
     """
     Connects to the watermark database, reads all watermarks,
     and verifies if they are unique and counts the total.
@@ -75,10 +75,11 @@ def check_uniqueness_and_count(db_path: str) -> None:
         if total_entries > 0:
             # Get the length of the first watermark string as a sample.
             sample_watermark_length = len(all_watermarks[0][0])
+            print(all_watermarks[0][0])
             print(f"Length of a sample watermark: {sample_watermark_length} bits.")
             
             # Define the expected length based on your generation parameters (message_n * message_l).
-            EXPECTED_LENGTH = 4096 * 16 # Based on 256x256 @ 1 BBP (64*64*16)
+            EXPECTED_LENGTH = 4096 * 16 * bpp # Based on 256x256 @ 1 bpp (64*64*16)
             # Check if the sample watermark's length matches the expected length.
             if sample_watermark_length == EXPECTED_LENGTH:
                 print(f"✅ Watermark length matches the expected length ({EXPECTED_LENGTH} bits).")
@@ -102,10 +103,12 @@ if __name__ == '__main__':
                         # Set a default path for convenience.
                         # The 'r' prefix creates a raw string, preventing backslashes from being
                         # interpreted as escape sequences, which is crucial for Windows paths.
-                        default=r'..\datasets\facelab_london\processed\watermarks\watermarks_BBP_1_65536_500_facelab_london.db',
+                        default=r'..\datasets\facelab_london\processed\watermarks\watermarks_BBP_2_131072_13107.db',
                         help='Full path to the SQLite watermark database file.')
+    parser.add_argument('--bpp', type=int, default=1,
+                        help='Bits per pixel (bpp) for the watermark, assuming bpp=1.')
     
     # Parse the command-line arguments provided by the user.
     args = parser.parse_args()
     # Call the main function to perform the uniqueness and count checks using the provided DB path.
-    check_uniqueness_and_count(args.db_path)
+    check_uniqueness_and_count(args.db_path, bpp=args.bpp)

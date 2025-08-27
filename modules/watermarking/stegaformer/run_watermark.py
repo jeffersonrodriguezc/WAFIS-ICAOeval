@@ -4,16 +4,16 @@ Author: Jefferson Rodríguez & Gemini - University of Cagliari - 2025-06-25
 import os
 import json
 import argparse
+import numpy as np
 from datetime import datetime
 from pathlib import Path
 import torch
-from utils import get_message_accuracy, MIMData_inference
+from utils import get_message_accuracy, MIMData_inference, get_watermark_from_db, load_and_preprocess_image
 from torchmetrics import PeakSignalNoiseRatio, StructuralSimilarityIndexMeasure
 from torch.utils.data import DataLoader
 from torchvision.utils import save_image
 
 from stegaformer import Encoder, Decoder
-
 
 def make_output_writable(path):
     """
@@ -87,6 +87,11 @@ def inference(inference_loader, encoder, decoder, message_N, device_id, msg_rang
             #please sigmoid first for the decoded message
             if msg_range == 1:
                 deco_messages = torch.sigmoid(deco_messages)
+            #print(deco_messages.shape)
+            #print(deco_messages)
+            #print(torch.round(deco_messages))
+            #print(messages.shape)
+            #print(messages)
 
             ac = get_message_accuracy(messages, deco_messages, message_N)
             p, s = compute_image_score(images, enco_images, cal_psnr, cal_ssim)
@@ -99,7 +104,9 @@ def inference(inference_loader, encoder, decoder, message_N, device_id, msg_rang
             for j in range(enco_images_clamped.shape[0]):
                 current_filename = filenames[j]
                 save_path_full = output_save_dir / current_filename
-                save_image(enco_images_clamped[j], save_path_full, normalize=True, range=(0, 1)) 
+                save_path_full = save_path_full.with_suffix(".png")  # store in PNG
+                print(f"Saving watermarked image to {save_path_full}")
+                save_image(enco_images_clamped[j], save_path_full, normalize=True, range=(0, 255)) 
     
     encoder.train()
     decoder.train()
@@ -122,6 +129,10 @@ def main() -> None:
     parser.add_argument('--win_size', type=int, default=16)
     parser.add_argument('--img_size', type=int, default=256)
     parser.add_argument('--batch_size', type=int, default=4)
+    parser.add_argument('--test', action='store_true', 
+                        help='Run in test mode for single image watermark extraction verification.')
+    parser.add_argument('--test_image_filename', type=str, 
+                        help='Original Filename (processed not watermarked) of the image to test extraction from (e.g., "001_image.jpg"). Required with --test.')
     parser.add_argument('--device', type=int, default=0)
     args = parser.parse_args()
 
@@ -163,47 +174,102 @@ def main() -> None:
     tag='acc'  # decide what is better to restore: 'psnr', 'ssim' or 'acc'
     )
 
-    # Test dataloader
-    inference_data_path = os.path.join(input_dir,args.dataset, 'processed', 'test')
-    watermark_db_path = os.path.join(input_dir,args.dataset, 'processed','watermarks', args.db_name)
-    test_dataset = MIMData_inference(data_path=inference_data_path, db_path=watermark_db_path, num_message=message_N, message_size=message_L, 
-                                     image_size=(im_size, im_size),dataset=args.dataset, msg_r=msg_range)
-    
-    test_dataloader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=8, pin_memory=True)
-    test_message_acc, test_psnr, test_ssim = inference(test_dataloader, encoder, decoder, message_N, device_id, msg_range,
-                                                       output_save_dir=output_save_dir, cal_psnr=cal_psnr, cal_ssim=cal_ssim)
+    # --- NEW LOGIC FOR TEST MODE ---
+    if args.test:
+        if not args.test_image_filename:
+            parser.error("--test requires --test_image_filename to be specified.")
+        
+        watermark_db_path = os.path.join(input_dir, args.dataset, 'processed', 'watermarks', args.db_name)
+        
+        # 1. Extract the ground truth watermark from the DB
+        true_message = get_watermark_from_db(watermark_db_path, args.test_image_filename)
+        if true_message is None:
+            print(f"Could not retrieve true watermark for {args.test_image_filename}. Exiting test mode.")
+            return
 
-    print(f"\n--- Inference results ---")
-    print(f"Accuracy: {test_message_acc:.4f}")
-    print(f"PSNR: {test_psnr:.4f}")
-    print(f"SSIM: {test_ssim:.4f}")
+        # 2. Read the watermarked image
+        watermarked_image_path = output_save_dir / args.test_image_filename
+        watermarked_image_path = watermarked_image_path.with_suffix(".png")
+        if not watermarked_image_path.exists():
+            print(f"Watermarked image not found at {watermarked_image_path}. Please ensure it has been generated.")
+            return
+        
+        # Load and preprocess the watermarked image for the decoder
+        watermarked_image_tensor = load_and_preprocess_image(watermarked_image_path, im_size, img_norm=False, device_id=device_id)
+        # 3. Use the decoder to extract the message
+        decoder.eval() # Set decoder to evaluation mode
+        with torch.no_grad():
+            decoded_message = decoder(watermarked_image_tensor)
+            
+            if msg_range == 1:
+                decoded_message = torch.sigmoid(decoded_message)
+
+        print(f"Decoded message shape: {decoded_message.shape}")
+        print(f"Decoded message: {decoded_message}")
+        # The decoder output shape might be (batch_size, message_N, msg_L)
+
+        true_messages = true_message.reshape((message_N, message_L))
+        true_message_reshaped = true_messages[np.newaxis, :] # Add batch dimension for comparison
+        true_message_reshaped_tensor = torch.tensor(true_message_reshaped, dtype=torch.float32).cuda(device_id)
+        #true_message_reshaped_tensor = true_message_reshaped_tensor / (msg_range + 1)
+        print(f"True message shape: {true_message_reshaped_tensor.shape}")
+        print(f"True message: {true_message_reshaped_tensor}")
+
+        # 4. Calculate accuracy error
+        accuracy = get_message_accuracy(true_message_reshaped_tensor, decoded_message, message_N) # message_N here is likely total_bits/batch_size, review its exact usage in utils
+        
+        print(f"\n--- Single Image Watermark Extraction Test Results for {args.test_image_filename} ---")
+        print(f"Extracted Accuracy: {accuracy:.4f}")
+        
+        # Optional: You might want to also compare the extracted message bits to true message bits
+        # to see where errors occur, but for now, accuracy is requested.
+        
+        # No need to make output writable for just a test run unless you save specific test logs
+        # make_output_writable("/app/output") # Only if you write new files in test mode
+        return # Exit main after single test run
+    # --- END LOGIC FOR TEST MODE ---
+    else:
+        # Test dataloader
+        inference_data_path = os.path.join(input_dir,args.dataset, 'processed', 'test')
+        watermark_db_path = os.path.join(input_dir,args.dataset, 'processed','watermarks', args.db_name)
+        test_dataset = MIMData_inference(data_path=inference_data_path, db_path=watermark_db_path, num_message=message_N, message_size=message_L, 
+                                        image_size=(im_size, im_size),dataset=args.dataset, msg_r=msg_range)
+        
+        test_dataloader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=8, pin_memory=True)
+        test_message_acc, test_psnr, test_ssim = inference(test_dataloader, encoder, decoder, message_N, device_id, msg_range,
+                                                        output_save_dir=output_save_dir, cal_psnr=cal_psnr, cal_ssim=cal_ssim)
+
+        print(f"\n--- Inference results ---")
+        print(f"Accuracy: {test_message_acc:.4f}")
+        print(f"PSNR: {test_psnr:.4f}")
+        print(f"SSIM: {test_ssim:.4f}")
 
 
-    # Store the results in a JSON file 
-    results_data = {
-        "timestamp": datetime.now().isoformat(),
-        "model_name": 'stegaformer',  
-        "training_dataset": args.train_dataset,
-        "inference_dataset": args.dataset,
-        "experiment_name": args.exp_name,
-        "fine_tuned_icao": False,  # Assuming the model is fine-tuned
-        "OFIQ_score": 0.0,  # Placeholder for OFIQ score
-        "ICAO_compliance": False,  # Placeholder for ICAO compliance
-        "bpp": args.bpp,
-        "watermark_lenght": message_L*message_N,
-        "accuracy": test_message_acc,
-        "psnr": test_psnr,
-        "ssim": test_ssim,
-    }
+        # Store the results in a JSON file 
+        results_data = {
+            "timestamp": datetime.now().isoformat(),
+            "model_name": 'stegaformer',  
+            "training_dataset": args.train_dataset,
+            "inference_dataset": args.dataset,
+            "experiment_name": args.exp_name,
+            "fine_tuned_icao": False,  # Assuming the model is fine-tuned
+            "OFIQ_score": 0.0,  # Placeholder for OFIQ score
+            "ICAO_compliance": False,  # Placeholder for ICAO compliance
+            "bpp": args.bpp,
+            "watermark_lenght": message_L*message_N,
+            "accuracy": test_message_acc,
+            "psnr": test_psnr,
+            "ssim": test_ssim,
+        }
 
-    # Generate a unique filename based on the current timestamp and dataset
-    results_filepath = base_path / "results_summary.json"
+        # Generate a unique filename based on the current timestamp and dataset
+        results_filepath = base_path / "results_summary.json"
 
-    with open(results_filepath, "w") as f:
-        json.dump(results_data, f, indent=2)
-    
-    print(f"Results saved to: {results_filepath}")
-    make_output_writable("/app/output")
+        with open(results_filepath, "w") as f:
+            json.dump(results_data, f, indent=2)
+        
+        print(f"Results saved to: {results_filepath}")
+        make_output_writable("/app/output")
 
 
 if __name__ == '__main__':

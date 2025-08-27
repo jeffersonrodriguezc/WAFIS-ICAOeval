@@ -1,15 +1,15 @@
 # modules/recognition/FaceNet/facenet_recognizer.py
 import torch
 from typing import Union
-from facenet_pytorch import InceptionResnetV1, MTCNN # InceptionResnetV1 es el backbone de FaceNet
+from facenet_pytorch import InceptionResnetV1, MTCNN # InceptionResnetV1 as a facenet backbone
 from PIL import Image
 from torchvision import transforms
 import numpy as np
-import os # Para manejar rutas si se pasa path de imagen
+import os 
 
 class FaceNetRecognizer:
     """
-    Servicio para extraer embeddings faciales utilizando un modelo FaceNet pre-entrenado.
+    This service extracts facial embeddings using a pre-trained FaceNet model.
     """
     def __init__(self, device: str = 'cpu'):
 

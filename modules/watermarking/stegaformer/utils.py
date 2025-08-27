@@ -9,6 +9,7 @@ import os
 import sqlite3
 from glob import glob
 import numpy as np
+from pathlib import Path
 from PIL import Image, ImageOps
 import torch
 import torchvision
@@ -179,6 +180,62 @@ def get_message_accuracy(
         bit_acc /= msg_num
 
     return bit_acc
+
+def get_watermark_from_db(db_path: str, filename: str) -> torch.Tensor:
+    """
+    Retrieves the binary watermark message for a given filename from the SQLite database.
+    Args:
+        db_path (str): Path to the SQLite watermark database file.
+        filename (str): The filename (image_filename) for which to retrieve the watermark.
+    Returns:
+        torch.Tensor: A tensor representing the binary watermark message (0s and 1s),
+                      or None if not found.
+    """
+    conn = None
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT watermark_data FROM watermarks WHERE image_filename = ?", (filename,))
+        result = cursor.fetchone()
+        if result:
+            # Convert the string to a tensor of floats
+            watermark_str = result[0]
+            # Ensure it's a list of floats 
+            message_list = [float(bit) for bit in watermark_str]
+            return np.array(message_list, dtype=np.float32)
+        else:
+            print(f"Watermark not found for filename: {filename} in {db_path}")
+            return None
+    except sqlite3.Error as e:
+        print(f"Database error: {e}")
+        return None
+    finally:
+        if conn:
+            conn.close()
+
+def load_and_preprocess_image(image_path: Path, 
+                              im_size: int, 
+                              img_norm: bool, 
+                              device_id: int) -> torch.Tensor:
+    """
+    Loads an image from path and preprocesses it for model input.
+    Args:
+        image_path (Path): Path to the image file.
+        im_size (int): Target size for the image (im_size, im_size).
+        device_id (int): GPU device ID.
+    Returns:
+        torch.Tensor: Preprocessed image tensor.
+    """
+    # Load and process the cover image
+    img = Image.open(image_path).convert('RGB')
+    img_cover = ImageOps.fit(img, (im_size,im_size))
+    if img_norm:
+        img_cover = np.array(img_cover, dtype=np.float32) / 255.0
+    else:
+        img_cover = np.array(img_cover, dtype=np.float32)
+    image_tensor = transforms.ToTensor()(img_cover)
+
+    return image_tensor.unsqueeze(0).cuda(device_id) # Add batch dimension and move to GPU
 
 class MIMData_inference(Dataset):
     """
