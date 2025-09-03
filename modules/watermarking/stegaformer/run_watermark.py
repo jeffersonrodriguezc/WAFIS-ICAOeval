@@ -12,6 +12,7 @@ from utils import get_message_accuracy, MIMData_inference, get_watermark_from_db
 from torchmetrics import PeakSignalNoiseRatio, StructuralSimilarityIndexMeasure
 from torch.utils.data import DataLoader
 from torchvision.utils import save_image
+from torchvision.transforms.functional import to_pil_image
 
 from stegaformer import Encoder, Decoder
 
@@ -81,9 +82,11 @@ def inference(inference_loader, encoder, decoder, message_N, device_id, msg_rang
             images = images.cuda(device_id)
             
             enco_images = encoder(images, messages)
-            enco_images_clamped = torch.clamp(enco_images,0,255).cpu()
+            enco_images_clamped = torch.clamp(enco_images,0,255)
+            #print("max value:", enco_images_clamped.detach().max().item())
+            #print("min value:", enco_images_clamped.detach().min().item())
             
-            deco_messages = decoder(enco_images)
+            deco_messages = decoder(enco_images_clamped)
             #please sigmoid first for the decoded message
             if msg_range == 1:
                 deco_messages = torch.sigmoid(deco_messages)
@@ -106,8 +109,11 @@ def inference(inference_loader, encoder, decoder, message_N, device_id, msg_rang
                 save_path_full = output_save_dir / current_filename
                 save_path_full = save_path_full.with_suffix(".png")  # store in PNG
                 print(f"Saving watermarked image to {save_path_full}")
-                save_image(enco_images_clamped[j], save_path_full, normalize=True, range=(0, 255)) 
-    
+                #save_image(enco_images_clamped[j].cpu(), save_path_full, normalize=True, range=(0, 255)) #
+                pil = to_pil_image(enco_images_clamped[j].to(torch.uint8))  # C,H,W -> PIL espera C,H,W uint8
+                #pil = torch.clamp(torch.round(enco_images_clamped[j]), 0, 255).to(torch.uint8)
+                #pil = to_pil_image(pil.cpu())  # C,H,W -> PIL espera C,H,W uint8
+                pil.save(save_path_full)
     encoder.train()
     decoder.train()
     
@@ -176,57 +182,107 @@ def main() -> None:
 
     # --- NEW LOGIC FOR TEST MODE ---
     if args.test:
-        if not args.test_image_filename:
-            parser.error("--test requires --test_image_filename to be specified.")
-        
+        inference_test_path = os.path.join(input_dir,args.dataset, 'processed', 'test')
         watermark_db_path = os.path.join(input_dir, args.dataset, 'processed', 'watermarks', args.db_name)
-        
-        # 1. Extract the ground truth watermark from the DB
-        true_message = get_watermark_from_db(watermark_db_path, args.test_image_filename)
-        if true_message is None:
-            print(f"Could not retrieve true watermark for {args.test_image_filename}. Exiting test mode.")
-            return
 
-        # 2. Read the watermarked image
-        watermarked_image_path = output_save_dir / args.test_image_filename
-        watermarked_image_path = watermarked_image_path.with_suffix(".png")
-        if not watermarked_image_path.exists():
-            print(f"Watermarked image not found at {watermarked_image_path}. Please ensure it has been generated.")
-            return
+        if args.test_image_filename:
+            filenames = [args.test_image_filename]
+            print(f"[TEST] for a single image: {args.test_image_filename}")
+        else:
+            inference_data_path = output_save_dir
+            filenames = [p.name for p in Path(inference_data_path).glob('*')]
+            filenames.sort()
+            if not filenames:
+                print(f"[TEST] Did not find any images in: {inference_data_path}")
+                return
+            print(f"[TEST] Batch mode: {len(filenames)} founded images in {inference_data_path}")
         
-        # Load and preprocess the watermarked image for the decoder
-        watermarked_image_tensor = load_and_preprocess_image(watermarked_image_path, im_size, img_norm=False, device_id=device_id)
-        # 3. Use the decoder to extract the message
         decoder.eval() # Set decoder to evaluation mode
+        acc_list = []
+        psnr_list = []
+        ssim_list = []
+        processed = 0
         with torch.no_grad():
-            decoded_message = decoder(watermarked_image_tensor)
+            for fname in filenames:
+
+                # 1. Get the true watermark message from the database
+                # remember watermaked images are stored as png but the db uses jpg or original extension
+                true_message = get_watermark_from_db(watermark_db_path, fname.replace('png','jpg'))
+                if true_message is None:
+                    print(f"Could not retrieve true watermark for {fname}. Skipping.")
+                    continue
             
-            if msg_range == 1:
-                decoded_message = torch.sigmoid(decoded_message)
+                # 2. Read the watermarked image
+                wm_path = (output_save_dir / fname).with_suffix(".png")
+                img_path = Path(inference_test_path) / fname.replace('png','jpg') # original image path
 
-        print(f"Decoded message shape: {decoded_message.shape}")
-        print(f"Decoded message: {decoded_message}")
-        # The decoder output shape might be (batch_size, message_N, msg_L)
+                if not img_path.exists():
+                    print(f"[SKIP] Does not exist: {fname} in: {img_path}")
+                    continue
 
-        true_messages = true_message.reshape((message_N, message_L))
-        true_message_reshaped = true_messages[np.newaxis, :] # Add batch dimension for comparison
-        true_message_reshaped_tensor = torch.tensor(true_message_reshaped, dtype=torch.float32).cuda(device_id)
-        #true_message_reshaped_tensor = true_message_reshaped_tensor / (msg_range + 1)
-        print(f"True message shape: {true_message_reshaped_tensor.shape}")
-        print(f"True message: {true_message_reshaped_tensor}")
+                if not wm_path.exists():
+                    print(f"[SKIP] Does not exist: {fname} in: {wm_path}")
+                    continue
 
-        # 4. Calculate accuracy error
-        accuracy = get_message_accuracy(true_message_reshaped_tensor, decoded_message, message_N) # message_N here is likely total_bits/batch_size, review its exact usage in utils
-        
-        print(f"\n--- Single Image Watermark Extraction Test Results for {args.test_image_filename} ---")
-        print(f"Extracted Accuracy: {accuracy:.4f}")
-        
-        # Optional: You might want to also compare the extracted message bits to true message bits
-        # to see where errors occur, but for now, accuracy is requested.
-        
-        # No need to make output writable for just a test run unless you save specific test logs
-        # make_output_writable("/app/output") # Only if you write new files in test mode
-        return # Exit main after single test run
+                # 3) Load and preprocess the watermarked image for the decoder
+                watermarked_image_tensor = load_and_preprocess_image(wm_path, im_size, img_norm=False, device_id=device_id)
+                image = load_and_preprocess_image(img_path, im_size, img_norm=False, device_id=device_id)
+                # print("min/max into decoder:", watermarked_image_tensor.amin().item(), watermarked_image_tensor.amax().item())
+
+                # 4) Decode the message
+                decoded_message = decoder(watermarked_image_tensor)
+            
+                if msg_range == 1:
+                    decoded_message = torch.sigmoid(decoded_message)
+
+                true_messages = true_message.reshape((message_N, message_L))
+                true_message_reshaped = true_messages[np.newaxis, :] # Add batch dimension for comparison
+                true_message_reshaped_tensor = torch.tensor(true_message_reshaped, dtype=torch.float32).cuda(device_id)
+
+                # 5) Calculate accuracy error
+                accuracy = get_message_accuracy(true_message_reshaped_tensor, 
+                                                decoded_message, message_N) # message_N here is likely total_bits/batch_size, review its exact usage in utils
+                p, s = compute_image_score(image, watermarked_image_tensor, cal_psnr, cal_ssim)
+                #print(f"[TEST] {fname} - Extracted Accuracy: {accuracy:.4f}, PSNR: {p:.4f}, SSIM: {s:.4f}")
+                
+                acc_list.append(accuracy)
+                psnr_list.append(p)
+                ssim_list.append(s)
+                processed += 1
+
+                if args.test_image_filename:
+                    print(f"\n--- Single Image Watermark Extraction Test Results for {fname} ---")
+                    print(f"Extracted Accuracy: {accuracy:.4f}")
+                    print(f"PSNR: {p:.4f}")
+                    print(f"SSIM: {s:.4f}")
+                    
+                    # optional info
+                    #print(f"Decoded message shape: {decoded_message.shape}")
+                    #print(f"Decoded message: {decoded_message}")
+                    # The decoder output shape might be (batch_size, message_N, msg_L)
+                    #print(f"True message shape: {true_message_reshaped_tensor.shape}")
+                    #print(f"True message: {true_message_reshaped_tensor}")
+
+                    return  
+
+            if processed == 0:
+                print("[TEST] No images were processed. Please check the filenames and paths.")
+                return
+            
+            acc_np = np.array(acc_list, dtype=float)
+            print("\n--- Batch Watermark Extraction (from stored images) ---")
+            print(f"Processed images : {processed}")
+            print(f"Accuracy mean : {acc_np.mean():.4f}")
+            print(f"Accuracy std  : {acc_np.std(ddof=1) if processed>1 else 0.0:.4f}")
+            print(f"Accuracy min  : {acc_np.min():.4f}")
+            print(f"Accuracy max  : {acc_np.max():.4f}")
+            print(f"PSNR mean : {np.array(psnr_list).mean():.4f}")
+            print(f"PSNR STD : {np.array(psnr_list).std(ddof=1) if processed>1 else 0.0:.4f}")
+            print(f"SSIM mean : {np.array(ssim_list).mean():.4f}")
+            print(f"SSIM STD : {np.array(ssim_list).std(ddof=1) if processed>1 else 0.0:.4f}")
+            print("---------------------------------------------------")
+        return # Exit main 
+    
     # --- END LOGIC FOR TEST MODE ---
     else:
         # Test dataloader

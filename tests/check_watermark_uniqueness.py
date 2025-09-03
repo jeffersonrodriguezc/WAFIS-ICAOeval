@@ -75,7 +75,7 @@ def check_uniqueness_and_count(db_path: str, bpp: int = 1) -> None:
         if total_entries > 0:
             # Get the length of the first watermark string as a sample.
             sample_watermark_length = len(all_watermarks[0][0])
-            print(all_watermarks[0][0])
+            #print(all_watermarks[0][0])
             print(f"Length of a sample watermark: {sample_watermark_length} bits.")
             
             # Define the expected length based on your generation parameters (message_n * message_l).

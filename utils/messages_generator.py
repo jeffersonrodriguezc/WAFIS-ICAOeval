@@ -4,6 +4,12 @@ import sqlite3
 import argparse
 import numpy as np
 from pathlib import Path
+import hashlib
+
+def seed_from_string(s: str) -> int:
+    # Tomamos 8 bytes del hash para un uint64 de forma determinista
+    h = hashlib.sha256(s.encode('utf-8')).digest()
+    return int.from_bytes(h[:8], 'big', signed=False)
 
 def extract_user_id(filename: str) -> str:
     """Extrae la ID de usuario de un nombre de archivo como '001_image_variant.png'."""
@@ -120,8 +126,8 @@ def main(
         try:
             user_seed = int(user_id)
         except ValueError:
-            # Alternatively, use a hash of the user_id string
-            user_seed = sum(ord(c) for c in user_id)
+            # Alternatively
+            user_seed = seed_from_string(user_id)
         
         # Generate a user-specific watermark by perturbing the global base watermark
         user_specific_watermark = generate_perturbed_watermark(
@@ -167,3 +173,5 @@ if __name__ == '__main__':
         msg_range=args.msg_range,
         overwrite_existing=args.overwrite
     )
+
+# python messages_generator.py --bbp 3 --msg_range 1 --flip_bits_count 39321 --dataset_name CFD  

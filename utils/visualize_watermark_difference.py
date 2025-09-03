@@ -42,16 +42,16 @@ def visualize_watermark_difference(
 
     # Create the output directory for visualizations if it does not already exist.
     # 'exist_ok=True' prevents an error if the directory already exists.
-    output_viz_dir = os.path.join(output_viz_dir, f'{model_name}_{exp_name}_{dataset}')
+    output_viz_dir = os.path.join(output_viz_dir, f'{model_name}', 'differences', f'{exp_name}_{dataset}')
     os.makedirs(output_viz_dir, exist_ok=True)
 
     # Get a sorted list of image files from the watermarked images directory.
     # It filters for common image file extensions. Sorting ensures consistent processing order.
-    image_files = sorted([f for f in os.listdir(watermarked_images_dir) if f.endswith(('.png', '.jpg', '.jpeg'))])
+    image_files = sorted([f for f in os.listdir(original_images_dir) if f.endswith(('.jpg', '.jpeg'))])
 
     # Check if any image files were found. If not, print a message and exit the function.
     if not image_files:
-        print(f"No images found in {watermarked_images_dir}")
+        print(f"No images found in {original_images_dir}")
         return
 
     # Loop through a subset of the found image files up to 'num_images_to_visualize'.
@@ -59,7 +59,8 @@ def visualize_watermark_difference(
         try:
             # Construct full paths for the current original and watermarked images.
             original_img_path = os.path.join(original_images_dir, filename)
-            watermarked_img_path = os.path.join(watermarked_images_dir, filename)
+            ext = filename.split('.')[-1]
+            watermarked_img_path = os.path.join(watermarked_images_dir, filename.replace(ext, 'png'))
 
             # Open the images using Pillow and convert them to RGB format.
             # Converting to RGB ensures consistent channel structure for calculations.
@@ -169,3 +170,5 @@ if __name__ == '__main__':
         num_images_to_visualize=args.num_images,
         output_viz_dir=args.output_dir
     )
+
+#python .\visualize_watermark_difference.py --exp_name 1_1_255_w16_learn_im --dataset CFD
