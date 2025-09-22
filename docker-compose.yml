@@ -30,7 +30,7 @@ services:
       - ./modules/watermarking/stegaformer:/app:rw
     entrypoint: ["python", "run_watermark.py"]
     command: "python run_watermark.py $@"
-    profiles: ["inference","stegaformer"]
+    profiles: ["inference-stegaformer"]
 
   facenet_recognizer:
     image: timesler/jupyter-dl-gpu:latest
@@ -99,8 +99,8 @@ services:
               capabilities: [gpu]
     volumes:
       - ./datasets:/app/facial_data:ro
-      - ./experiments/output/stegformer:/app/output:rw
+      - ./experiments/output/watermarking:/app/output:rw
       - ./modules/watermarking/stegformer:/app:rw
     entrypoint: ["python", "run_watermark.py"]
     command: "python run_watermark.py $@"
-    profiles: ["inference", "stegformer"]
+    profiles: ["inference-stegformer"]

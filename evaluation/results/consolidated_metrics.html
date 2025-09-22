@@ -1,0 +1,853 @@
+
+    <html>
+    <head>
+      <meta charset="utf-8" />
+      <title>Consolidated Metrics</title>
+      <style>
+        body { font-family: Arial, sans-serif; }
+        table { border-collapse: collapse; font-size: 13px; }
+        th, td { border: 1px solid #ccc; padding: 6px 8px; }
+        th { background: #f5f5f5; }
+      </style>
+    </head>
+    <body>
+      <h2>Watermarking metrics</h2>
+      <table border="1" class="dataframe">
+  <thead>
+    <tr style="text-align: right;">
+      <th>Dataset</th>
+      <th>Model</th>
+      <th>BPP</th>
+      <th>ACC %</th>
+      <th>PSNR</th>
+      <th>SSIM</th>
+      <th>ACC % offline</th>
+      <th>PSNR offline</th>
+      <th>SSIM offline</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>cfd</td>
+      <td>stegaformer</td>
+      <td>1</td>
+      <td>99.584 ± 0.445</td>
+      <td>56.968 ± 1.828</td>
+      <td>0.999 ± 0.000</td>
+      <td>92.394 ± 92.394</td>
+      <td>50.005 ± 0.441</td>
+      <td>0.998 ± 0.000</td>
+    </tr>
+    <tr>
+      <td>cfd</td>
+      <td>stegaformer</td>
+      <td>2</td>
+      <td>99.893 ± 0.049</td>
+      <td>52.033 ± 1.687</td>
+      <td>0.998 ± 0.001</td>
+      <td>80.936 ± 80.936</td>
+      <td>48.368 ± 0.868</td>
+      <td>0.998 ± 0.001</td>
+    </tr>
+    <tr>
+      <td>cfd</td>
+      <td>stegaformer</td>
+      <td>3</td>
+      <td>99.883 ± 0.059</td>
+      <td>49.503 ± 1.481</td>
+      <td>0.997 ± 0.001</td>
+      <td>79.874 ± 79.874</td>
+      <td>46.979 ± 0.956</td>
+      <td>0.997 ± 0.001</td>
+    </tr>
+    <tr>
+      <td>cfd</td>
+      <td>stegformer</td>
+      <td>1</td>
+      <td>99.992 ± 0.009</td>
+      <td>39.208 ± 0.483</td>
+      <td>0.970 ± 0.002</td>
+      <td>99.993 ± 0.011</td>
+      <td>38.548 ± 0.504</td>
+      <td>0.969 ± 0.003</td>
+    </tr>
+    <tr>
+      <td>facelab_london</td>
+      <td>stegaformer</td>
+      <td>1</td>
+      <td>99.983 ± 0.003</td>
+      <td>59.467 ± 0.119</td>
+      <td>0.999 ± 0.000</td>
+      <td>94.371 ± 94.371</td>
+      <td>50.214 ± 0.058</td>
+      <td>0.997 ± 0.000</td>
+    </tr>
+    <tr>
+      <td>facelab_london</td>
+      <td>stegaformer</td>
+      <td>2</td>
+      <td>99.999 ± 0.001</td>
+      <td>55.406 ± 0.157</td>
+      <td>0.999 ± 0.000</td>
+      <td>84.656 ± 84.656</td>
+      <td>49.950 ± 0.273</td>
+      <td>0.997 ± 0.000</td>
+    </tr>
+    <tr>
+      <td>facelab_london</td>
+      <td>stegaformer</td>
+      <td>3</td>
+      <td>99.995 ± 0.001</td>
+      <td>52.755 ± 0.200</td>
+      <td>0.998 ± 0.000</td>
+      <td>80.559 ± 80.559</td>
+      <td>49.277 ± 0.312</td>
+      <td>0.996 ± 0.000</td>
+    </tr>
+    <tr>
+      <td>facelab_london</td>
+      <td>stegformer</td>
+      <td>1</td>
+      <td>100.000 ± 0.000</td>
+      <td>42.779 ± 0.272</td>
+      <td>0.972 ± 0.001</td>
+      <td>100.000 ± 0.000</td>
+      <td>42.209 ± 0.348</td>
+      <td>0.970 ± 0.002</td>
+    </tr>
+    <tr>
+      <td>lfw</td>
+      <td>stegaformer</td>
+      <td>1</td>
+      <td>99.912 ± 0.024</td>
+      <td>56.990 ± 0.883</td>
+      <td>0.999 ± 0.000</td>
+      <td>88.087 ± 88.087</td>
+      <td>50.974 ± 0.538</td>
+      <td>0.997 ± 0.001</td>
+    </tr>
+    <tr>
+      <td>lfw</td>
+      <td>stegaformer</td>
+      <td>2</td>
+      <td>99.903 ± 0.038</td>
+      <td>52.265 ± 0.894</td>
+      <td>0.997 ± 0.001</td>
+      <td>82.248 ± 82.248</td>
+      <td>49.771 ± 0.835</td>
+      <td>0.997 ± 0.001</td>
+    </tr>
+    <tr>
+      <td>lfw</td>
+      <td>stegaformer</td>
+      <td>3</td>
+      <td>99.838 ± 0.071</td>
+      <td>49.647 ± 0.889</td>
+      <td>0.995 ± 0.001</td>
+      <td>80.964 ± 80.964</td>
+      <td>48.209 ± 1.056</td>
+      <td>0.995 ± 0.002</td>
+    </tr>
+    <tr>
+      <td>lfw</td>
+      <td>stegformer</td>
+      <td>1</td>
+      <td>99.986 ± 0.018</td>
+      <td>41.178 ± 1.061</td>
+      <td>0.961 ± 0.018</td>
+      <td>99.980 ± 0.030</td>
+      <td>41.164 ± 1.302</td>
+      <td>0.964 ± 0.019</td>
+    </tr>
+    <tr>
+      <td>onot</td>
+      <td>stegaformer</td>
+      <td>1</td>
+      <td>99.915 ± 0.046</td>
+      <td>55.930 ± 0.825</td>
+      <td>0.999 ± 0.000</td>
+      <td>90.618 ± 90.618</td>
+      <td>50.031 ± 0.333</td>
+      <td>0.998 ± 0.000</td>
+    </tr>
+    <tr>
+      <td>onot</td>
+      <td>stegaformer</td>
+      <td>2</td>
+      <td>99.987 ± 0.010</td>
+      <td>51.464 ± 0.905</td>
+      <td>0.998 ± 0.000</td>
+      <td>83.984 ± 83.984</td>
+      <td>48.354 ± 0.707</td>
+      <td>0.997 ± 0.001</td>
+    </tr>
+    <tr>
+      <td>onot</td>
+      <td>stegaformer</td>
+      <td>3</td>
+      <td>99.959 ± 0.027</td>
+      <td>49.060 ± 0.862</td>
+      <td>0.997 ± 0.000</td>
+      <td>82.385 ± 82.385</td>
+      <td>46.970 ± 0.880</td>
+      <td>0.996 ± 0.001</td>
+    </tr>
+    <tr>
+      <td>onot</td>
+      <td>stegformer</td>
+      <td>1</td>
+      <td>99.998 ± 0.004</td>
+      <td>40.327 ± 0.887</td>
+      <td>0.975 ± 0.003</td>
+      <td>99.996 ± 0.008</td>
+      <td>40.024 ± 1.067</td>
+      <td>0.975 ± 0.003</td>
+    </tr>
+  </tbody>
+</table>
+      <h2>Recognition metrics</h2>
+      <table border="1" class="dataframe">
+  <thead>
+    <tr style="text-align: right;">
+      <th>Dataset</th>
+      <th>Model</th>
+      <th>BPP</th>
+      <th>Model_recog</th>
+      <th>Metric</th>
+      <th>Probe-Reference</th>
+      <th>EER</th>
+      <th>FAR at EER</th>
+      <th>FRR at EER</th>
+      <th>TAR at FAR ~0.01%</th>
+      <th>AUC</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>cfd</td>
+      <td>stegaformer</td>
+      <td>1</td>
+      <td>Facenet</td>
+      <td>Cosine</td>
+      <td>Original-Original</td>
+      <td>0.133</td>
+      <td>0.266</td>
+      <td>0.000</td>
+      <td>99.367</td>
+      <td>1.000</td>
+    </tr>
+    <tr>
+      <td>cfd</td>
+      <td>stegaformer</td>
+      <td>1</td>
+      <td>Facenet</td>
+      <td>Cosine</td>
+      <td>Watermarked-Original</td>
+      <td>0.069</td>
+      <td>0.137</td>
+      <td>0.000</td>
+      <td>99.367</td>
+      <td>1.000</td>
+    </tr>
+    <tr>
+      <td>cfd</td>
+      <td>stegaformer</td>
+      <td>1</td>
+      <td>Facenet</td>
+      <td>Cosine</td>
+      <td>Watermarked-Watermarked</td>
+      <td>0.036</td>
+      <td>0.073</td>
+      <td>0.000</td>
+      <td>99.367</td>
+      <td>1.000</td>
+    </tr>
+    <tr>
+      <td>cfd</td>
+      <td>stegaformer</td>
+      <td>2</td>
+      <td>Facenet</td>
+      <td>Cosine</td>
+      <td>Original-Original</td>
+      <td>0.133</td>
+      <td>0.266</td>
+      <td>0.000</td>
+      <td>99.367</td>
+      <td>1.000</td>
+    </tr>
+    <tr>
+      <td>cfd</td>
+      <td>stegaformer</td>
+      <td>2</td>
+      <td>Facenet</td>
+      <td>Cosine</td>
+      <td>Watermarked-Original</td>
+      <td>0.069</td>
+      <td>0.137</td>
+      <td>0.000</td>
+      <td>99.367</td>
+      <td>1.000</td>
+    </tr>
+    <tr>
+      <td>cfd</td>
+      <td>stegaformer</td>
+      <td>2</td>
+      <td>Facenet</td>
+      <td>Cosine</td>
+      <td>Watermarked-Watermarked</td>
+      <td>0.048</td>
+      <td>0.097</td>
+      <td>0.000</td>
+      <td>99.367</td>
+      <td>1.000</td>
+    </tr>
+    <tr>
+      <td>cfd</td>
+      <td>stegaformer</td>
+      <td>3</td>
+      <td>Facenet</td>
+      <td>Cosine</td>
+      <td>Original-Original</td>
+      <td>0.133</td>
+      <td>0.266</td>
+      <td>0.000</td>
+      <td>99.367</td>
+      <td>1.000</td>
+    </tr>
+    <tr>
+      <td>cfd</td>
+      <td>stegaformer</td>
+      <td>3</td>
+      <td>Facenet</td>
+      <td>Cosine</td>
+      <td>Watermarked-Original</td>
+      <td>0.065</td>
+      <td>0.129</td>
+      <td>0.000</td>
+      <td>99.367</td>
+      <td>1.000</td>
+    </tr>
+    <tr>
+      <td>cfd</td>
+      <td>stegaformer</td>
+      <td>3</td>
+      <td>Facenet</td>
+      <td>Cosine</td>
+      <td>Watermarked-Watermarked</td>
+      <td>0.028</td>
+      <td>0.056</td>
+      <td>0.000</td>
+      <td>99.367</td>
+      <td>1.000</td>
+    </tr>
+    <tr>
+      <td>cfd</td>
+      <td>stegformer</td>
+      <td>1</td>
+      <td>Facenet</td>
+      <td>Cosine</td>
+      <td>Original-Original</td>
+      <td>0.133</td>
+      <td>0.266</td>
+      <td>0.000</td>
+      <td>99.367</td>
+      <td>1.000</td>
+    </tr>
+    <tr>
+      <td>cfd</td>
+      <td>stegformer</td>
+      <td>1</td>
+      <td>Facenet</td>
+      <td>Cosine</td>
+      <td>Watermarked-Original</td>
+      <td>0.069</td>
+      <td>0.137</td>
+      <td>0.000</td>
+      <td>99.367</td>
+      <td>1.000</td>
+    </tr>
+    <tr>
+      <td>cfd</td>
+      <td>stegformer</td>
+      <td>1</td>
+      <td>Facenet</td>
+      <td>Cosine</td>
+      <td>Watermarked-Watermarked</td>
+      <td>0.048</td>
+      <td>0.097</td>
+      <td>0.000</td>
+      <td>99.367</td>
+      <td>1.000</td>
+    </tr>
+    <tr>
+      <td>facelab_london</td>
+      <td>stegaformer</td>
+      <td>1</td>
+      <td>Facenet</td>
+      <td>Cosine</td>
+      <td>Original-Original</td>
+      <td>0.000</td>
+      <td>0.000</td>
+      <td>0.000</td>
+      <td>100.000</td>
+      <td>1.000</td>
+    </tr>
+    <tr>
+      <td>facelab_london</td>
+      <td>stegaformer</td>
+      <td>1</td>
+      <td>Facenet</td>
+      <td>Cosine</td>
+      <td>Watermarked-Original</td>
+      <td>0.000</td>
+      <td>0.000</td>
+      <td>0.000</td>
+      <td>100.000</td>
+      <td>1.000</td>
+    </tr>
+    <tr>
+      <td>facelab_london</td>
+      <td>stegaformer</td>
+      <td>1</td>
+      <td>Facenet</td>
+      <td>Cosine</td>
+      <td>Watermarked-Watermarked</td>
+      <td>0.000</td>
+      <td>0.000</td>
+      <td>0.000</td>
+      <td>100.000</td>
+      <td>1.000</td>
+    </tr>
+    <tr>
+      <td>facelab_london</td>
+      <td>stegaformer</td>
+      <td>2</td>
+      <td>Facenet</td>
+      <td>Cosine</td>
+      <td>Original-Original</td>
+      <td>0.000</td>
+      <td>0.000</td>
+      <td>0.000</td>
+      <td>100.000</td>
+      <td>1.000</td>
+    </tr>
+    <tr>
+      <td>facelab_london</td>
+      <td>stegaformer</td>
+      <td>2</td>
+      <td>Facenet</td>
+      <td>Cosine</td>
+      <td>Watermarked-Original</td>
+      <td>0.000</td>
+      <td>0.000</td>
+      <td>0.000</td>
+      <td>100.000</td>
+      <td>1.000</td>
+    </tr>
+    <tr>
+      <td>facelab_london</td>
+      <td>stegaformer</td>
+      <td>2</td>
+      <td>Facenet</td>
+      <td>Cosine</td>
+      <td>Watermarked-Watermarked</td>
+      <td>0.000</td>
+      <td>0.000</td>
+      <td>0.000</td>
+      <td>100.000</td>
+      <td>1.000</td>
+    </tr>
+    <tr>
+      <td>facelab_london</td>
+      <td>stegaformer</td>
+      <td>3</td>
+      <td>Facenet</td>
+      <td>Cosine</td>
+      <td>Original-Original</td>
+      <td>0.000</td>
+      <td>0.000</td>
+      <td>0.000</td>
+      <td>100.000</td>
+      <td>1.000</td>
+    </tr>
+    <tr>
+      <td>facelab_london</td>
+      <td>stegaformer</td>
+      <td>3</td>
+      <td>Facenet</td>
+      <td>Cosine</td>
+      <td>Watermarked-Original</td>
+      <td>0.000</td>
+      <td>0.000</td>
+      <td>0.000</td>
+      <td>100.000</td>
+      <td>1.000</td>
+    </tr>
+    <tr>
+      <td>facelab_london</td>
+      <td>stegaformer</td>
+      <td>3</td>
+      <td>Facenet</td>
+      <td>Cosine</td>
+      <td>Watermarked-Watermarked</td>
+      <td>0.000</td>
+      <td>0.000</td>
+      <td>0.000</td>
+      <td>100.000</td>
+      <td>1.000</td>
+    </tr>
+    <tr>
+      <td>facelab_london</td>
+      <td>stegformer</td>
+      <td>1</td>
+      <td>Facenet</td>
+      <td>Cosine</td>
+      <td>Original-Original</td>
+      <td>0.000</td>
+      <td>0.000</td>
+      <td>0.000</td>
+      <td>100.000</td>
+      <td>1.000</td>
+    </tr>
+    <tr>
+      <td>facelab_london</td>
+      <td>stegformer</td>
+      <td>1</td>
+      <td>Facenet</td>
+      <td>Cosine</td>
+      <td>Watermarked-Original</td>
+      <td>0.000</td>
+      <td>0.000</td>
+      <td>0.000</td>
+      <td>100.000</td>
+      <td>1.000</td>
+    </tr>
+    <tr>
+      <td>facelab_london</td>
+      <td>stegformer</td>
+      <td>1</td>
+      <td>Facenet</td>
+      <td>Cosine</td>
+      <td>Watermarked-Watermarked</td>
+      <td>0.000</td>
+      <td>0.000</td>
+      <td>0.000</td>
+      <td>100.000</td>
+      <td>1.000</td>
+    </tr>
+    <tr>
+      <td>lfw</td>
+      <td>stegaformer</td>
+      <td>1</td>
+      <td>Facenet</td>
+      <td>Cosine</td>
+      <td>Original-Original</td>
+      <td>4.760</td>
+      <td>4.757</td>
+      <td>4.762</td>
+      <td>76.845</td>
+      <td>0.978</td>
+    </tr>
+    <tr>
+      <td>lfw</td>
+      <td>stegaformer</td>
+      <td>1</td>
+      <td>Facenet</td>
+      <td>Cosine</td>
+      <td>Watermarked-Original</td>
+      <td>4.879</td>
+      <td>4.876</td>
+      <td>4.881</td>
+      <td>76.845</td>
+      <td>0.977</td>
+    </tr>
+    <tr>
+      <td>lfw</td>
+      <td>stegaformer</td>
+      <td>1</td>
+      <td>Facenet</td>
+      <td>Cosine</td>
+      <td>Watermarked-Watermarked</td>
+      <td>4.880</td>
+      <td>4.879</td>
+      <td>4.881</td>
+      <td>78.393</td>
+      <td>0.978</td>
+    </tr>
+    <tr>
+      <td>lfw</td>
+      <td>stegaformer</td>
+      <td>2</td>
+      <td>Facenet</td>
+      <td>Cosine</td>
+      <td>Original-Original</td>
+      <td>4.760</td>
+      <td>4.757</td>
+      <td>4.762</td>
+      <td>76.845</td>
+      <td>0.978</td>
+    </tr>
+    <tr>
+      <td>lfw</td>
+      <td>stegaformer</td>
+      <td>2</td>
+      <td>Facenet</td>
+      <td>Cosine</td>
+      <td>Watermarked-Original</td>
+      <td>4.809</td>
+      <td>4.796</td>
+      <td>4.821</td>
+      <td>76.726</td>
+      <td>0.977</td>
+    </tr>
+    <tr>
+      <td>lfw</td>
+      <td>stegaformer</td>
+      <td>2</td>
+      <td>Facenet</td>
+      <td>Cosine</td>
+      <td>Watermarked-Watermarked</td>
+      <td>4.819</td>
+      <td>4.817</td>
+      <td>4.821</td>
+      <td>78.452</td>
+      <td>0.978</td>
+    </tr>
+    <tr>
+      <td>lfw</td>
+      <td>stegaformer</td>
+      <td>3</td>
+      <td>Facenet</td>
+      <td>Cosine</td>
+      <td>Original-Original</td>
+      <td>4.760</td>
+      <td>4.757</td>
+      <td>4.762</td>
+      <td>76.845</td>
+      <td>0.978</td>
+    </tr>
+    <tr>
+      <td>lfw</td>
+      <td>stegaformer</td>
+      <td>3</td>
+      <td>Facenet</td>
+      <td>Cosine</td>
+      <td>Watermarked-Original</td>
+      <td>4.879</td>
+      <td>4.877</td>
+      <td>4.881</td>
+      <td>76.964</td>
+      <td>0.977</td>
+    </tr>
+    <tr>
+      <td>lfw</td>
+      <td>stegaformer</td>
+      <td>3</td>
+      <td>Facenet</td>
+      <td>Cosine</td>
+      <td>Watermarked-Watermarked</td>
+      <td>4.882</td>
+      <td>4.884</td>
+      <td>4.881</td>
+      <td>78.452</td>
+      <td>0.977</td>
+    </tr>
+    <tr>
+      <td>lfw</td>
+      <td>stegformer</td>
+      <td>1</td>
+      <td>Facenet</td>
+      <td>Cosine</td>
+      <td>Original-Original</td>
+      <td>4.760</td>
+      <td>4.757</td>
+      <td>4.762</td>
+      <td>76.845</td>
+      <td>0.978</td>
+    </tr>
+    <tr>
+      <td>lfw</td>
+      <td>stegformer</td>
+      <td>1</td>
+      <td>Facenet</td>
+      <td>Cosine</td>
+      <td>Watermarked-Original</td>
+      <td>4.823</td>
+      <td>4.825</td>
+      <td>4.821</td>
+      <td>76.726</td>
+      <td>0.977</td>
+    </tr>
+    <tr>
+      <td>lfw</td>
+      <td>stegformer</td>
+      <td>1</td>
+      <td>Facenet</td>
+      <td>Cosine</td>
+      <td>Watermarked-Watermarked</td>
+      <td>5.053</td>
+      <td>5.046</td>
+      <td>5.060</td>
+      <td>78.512</td>
+      <td>0.978</td>
+    </tr>
+    <tr>
+      <td>onot</td>
+      <td>stegaformer</td>
+      <td>1</td>
+      <td>Facenet</td>
+      <td>Cosine</td>
+      <td>Original-Original</td>
+      <td>2.574</td>
+      <td>2.748</td>
+      <td>2.400</td>
+      <td>19.200</td>
+      <td>0.995</td>
+    </tr>
+    <tr>
+      <td>onot</td>
+      <td>stegaformer</td>
+      <td>1</td>
+      <td>Facenet</td>
+      <td>Cosine</td>
+      <td>Watermarked-Original</td>
+      <td>3.174</td>
+      <td>3.148</td>
+      <td>3.200</td>
+      <td>20.000</td>
+      <td>0.995</td>
+    </tr>
+    <tr>
+      <td>onot</td>
+      <td>stegaformer</td>
+      <td>1</td>
+      <td>Facenet</td>
+      <td>Cosine</td>
+      <td>Watermarked-Watermarked</td>
+      <td>2.542</td>
+      <td>2.684</td>
+      <td>2.400</td>
+      <td>24.000</td>
+      <td>0.996</td>
+    </tr>
+    <tr>
+      <td>onot</td>
+      <td>stegaformer</td>
+      <td>2</td>
+      <td>Facenet</td>
+      <td>Cosine</td>
+      <td>Original-Original</td>
+      <td>2.574</td>
+      <td>2.748</td>
+      <td>2.400</td>
+      <td>19.200</td>
+      <td>0.995</td>
+    </tr>
+    <tr>
+      <td>onot</td>
+      <td>stegaformer</td>
+      <td>2</td>
+      <td>Facenet</td>
+      <td>Cosine</td>
+      <td>Watermarked-Original</td>
+      <td>3.168</td>
+      <td>3.135</td>
+      <td>3.200</td>
+      <td>19.200</td>
+      <td>0.994</td>
+    </tr>
+    <tr>
+      <td>onot</td>
+      <td>stegaformer</td>
+      <td>2</td>
+      <td>Facenet</td>
+      <td>Cosine</td>
+      <td>Watermarked-Watermarked</td>
+      <td>2.400</td>
+      <td>2.400</td>
+      <td>2.400</td>
+      <td>12.000</td>
+      <td>0.996</td>
+    </tr>
+    <tr>
+      <td>onot</td>
+      <td>stegaformer</td>
+      <td>3</td>
+      <td>Facenet</td>
+      <td>Cosine</td>
+      <td>Original-Original</td>
+      <td>2.574</td>
+      <td>2.748</td>
+      <td>2.400</td>
+      <td>19.200</td>
+      <td>0.995</td>
+    </tr>
+    <tr>
+      <td>onot</td>
+      <td>stegaformer</td>
+      <td>3</td>
+      <td>Facenet</td>
+      <td>Cosine</td>
+      <td>Watermarked-Original</td>
+      <td>3.200</td>
+      <td>3.200</td>
+      <td>3.200</td>
+      <td>19.200</td>
+      <td>0.994</td>
+    </tr>
+    <tr>
+      <td>onot</td>
+      <td>stegaformer</td>
+      <td>3</td>
+      <td>Facenet</td>
+      <td>Cosine</td>
+      <td>Watermarked-Watermarked</td>
+      <td>2.439</td>
+      <td>2.477</td>
+      <td>2.400</td>
+      <td>24.800</td>
+      <td>0.996</td>
+    </tr>
+    <tr>
+      <td>onot</td>
+      <td>stegformer</td>
+      <td>1</td>
+      <td>Facenet</td>
+      <td>Cosine</td>
+      <td>Original-Original</td>
+      <td>2.574</td>
+      <td>2.748</td>
+      <td>2.400</td>
+      <td>19.200</td>
+      <td>0.995</td>
+    </tr>
+    <tr>
+      <td>onot</td>
+      <td>stegformer</td>
+      <td>1</td>
+      <td>Facenet</td>
+      <td>Cosine</td>
+      <td>Watermarked-Original</td>
+      <td>3.161</td>
+      <td>3.123</td>
+      <td>3.200</td>
+      <td>20.000</td>
+      <td>0.994</td>
+    </tr>
+    <tr>
+      <td>onot</td>
+      <td>stegformer</td>
+      <td>1</td>
+      <td>Facenet</td>
+      <td>Cosine</td>
+      <td>Watermarked-Watermarked</td>
+      <td>2.400</td>
+      <td>2.400</td>
+      <td>2.400</td>
+      <td>13.600</td>
+      <td>0.995</td>
+    </tr>
+  </tbody>
+</table>
+    </body>
+    </html>

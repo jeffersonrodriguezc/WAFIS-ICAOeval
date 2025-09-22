@@ -65,7 +65,8 @@ def main(
     flip_bits_count: int, # number of bits to flip for user-specific watermark
     bbp: int = 1, # bits per pixel, assuming bpp=1
     msg_range: int = 1,
-    overwrite_existing: bool = False
+    overwrite_existing: bool = False,
+    set_name: str = 'test' 
 ):
     """
     Generate fixed watermarks for inference based on user IDs in the dataset and save them to a SQLite DB.
@@ -74,6 +75,9 @@ def main(
     """
     
     test_data_path = os.path.join(data_root_path, dataset_name, 'processed', 'test')
+    if set_name == 'templates':
+        test_data_path = os.path.join(data_root_path, dataset_name, 'processed', 'templates')
+
     output_dir = os.path.join(data_root_path, dataset_name, 'processed', 'watermarks')
     
     if not os.path.exists(test_data_path):
@@ -85,6 +89,9 @@ def main(
     WATERMARK_LENGTH = message_n * (message_l*bbp) # 65536, bbp=1
 
     output_filename = f"watermarks_BBP_{BBP}_{WATERMARK_LENGTH}_{flip_bits_count}.db"
+    if set_name == 'templates':
+        output_filename = f"watermarks_BBP_{BBP}_{WATERMARK_LENGTH}_{flip_bits_count}_templates.db"
+        
     output_filepath = os.path.join(output_dir, output_filename)
 
     os.makedirs(output_dir, exist_ok=True)
@@ -109,6 +116,8 @@ def main(
         image_files = glob.glob(os.path.join(test_data_path, '*.jpg'))
     elif dataset_name == 'ONOT':
         image_files = glob.glob(os.path.join(test_data_path, '*.png'))
+    elif dataset_name == 'LFW':
+        image_files = glob.glob(os.path.join(test_data_path, '*.jpg'))
     
     if not image_files:
         print(f"No images found in {test_data_path}.")
@@ -160,6 +169,8 @@ if __name__ == '__main__':
     parser.add_argument('--msg_range', type=int, default=1)
     parser.add_argument('--overwrite', action='store_true',
                         help='OVerwrite existing watermark database if it exists.')
+    parser.add_argument('--set_name', type=str, default='test',
+                        help='Set name to process (e.g., "test", "templates"). Only used to modify filename extraction.')
 
     args = parser.parse_args()
 
@@ -171,7 +182,8 @@ if __name__ == '__main__':
         flip_bits_count=args.flip_bits_count,
         bbp=args.bbp,
         msg_range=args.msg_range,
-        overwrite_existing=args.overwrite
+        overwrite_existing=args.overwrite,
+        set_name=args.set_name
     )
 
 # python messages_generator.py --bbp 3 --msg_range 1 --flip_bits_count 39321 --dataset_name CFD  

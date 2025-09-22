@@ -113,16 +113,15 @@ def inference(inference_loader, encoder, decoder, message_N, device_id, msg_rang
                 pil = to_pil_image(enco_images_clamped[j].to(torch.uint8))  # C,H,W -> PIL espera C,H,W uint8
                 #pil = torch.clamp(torch.round(enco_images_clamped[j]), 0, 255).to(torch.uint8)
                 #pil = to_pil_image(pil.cpu())  # C,H,W -> PIL espera C,H,W uint8
-                pil.save(save_path_full)
+                pil.save(save_path_full, format="PNG", compress_level=0)
     encoder.train()
     decoder.train()
     
-    return sum(acc)/len(acc), sum(psnr)/len(psnr), sum(ssim)/len(ssim)
+    return np.mean(acc), np.mean(psnr), np.mean(ssim), np.std(acc), np.std(psnr), np.std(ssim)
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Embed watermark messages into images")
-    parser.add_argument('--dataset', type=str, choices=['facelab_london', 'CFD', 'ONOT'], default='facelab_london')
-    parser.add_argument('--db_name', type=str, default='watermarks_BBP_1_65536_500.db')
+    parser.add_argument('--dataset', type=str, choices=['facelab_london', 'CFD', 'ONOT', 'LFW'], default='facelab_london')
     parser.add_argument('--exp_name', type=str, default='1_1_255_w16_learn_im')
     parser.add_argument('--train_dataset', type=str, default='celeba_hq',
                         help='Name of the training dataset used for the model')                   
@@ -135,6 +134,7 @@ def main() -> None:
     parser.add_argument('--win_size', type=int, default=16)
     parser.add_argument('--img_size', type=int, default=256)
     parser.add_argument('--batch_size', type=int, default=4)
+    parser.add_argument('--set_name', type=str, choices=['test','templates'], default='test')
     parser.add_argument('--test', action='store_true', 
                         help='Run in test mode for single image watermark extraction verification.')
     parser.add_argument('--test_image_filename', type=str, 
@@ -142,6 +142,28 @@ def main() -> None:
     parser.add_argument('--device', type=int, default=0)
     args = parser.parse_args()
 
+    # select DB name based on bpp
+    if args.bpp == 1:
+        db_name = "watermarks_BBP_1_65536_500.db"
+        if args.set_name == 'templates':
+            db_name = "watermarks_BBP_1_65536_500_templates.db" 
+    elif args.bpp == 2:
+        db_name = "watermarks_BBP_2_131072_13107.db"
+        if args.set_name == 'templates':
+            db_name = "watermarks_BBP_2_131072_13107_templates.db"
+    elif args.bpp == 3:
+        db_name = "watermarks_BBP_3_196608_39321.db"
+        if args.set_name == 'templates':
+            db_name = "watermarks_BBP_3_196608_39321_templates.db"
+    elif args.bpp == 4: 
+        db_name = ""
+    elif args.bpp == 6:
+        db_name = ""         
+    elif args.bpp == 8:
+        db_name = ""   
+    else:
+        raise ValueError(f"Unsupported bpp: {args.bpp}")
+    
     # Setting parameters and hyperparameters used in training
     message_L = 16*args.bpp
     message_N = 64*64
@@ -157,6 +179,8 @@ def main() -> None:
     model_path = Path(f'/app/runs/{args.exp_name}/{args.train_dataset}/model')
     base_path = Path('/app/output/stegaformer') / args.exp_name / "inference" / f"{args.dataset}"
     output_save_dir = base_path / 'watermarked_images'
+    if args.set_name == 'templates':
+        output_save_dir = base_path / 'watermarked_templates'
     output_save_dir.mkdir(parents=True, exist_ok=True)
 
     # create the encoder and decoder models
@@ -183,7 +207,9 @@ def main() -> None:
     # --- NEW LOGIC FOR TEST MODE ---
     if args.test:
         inference_test_path = os.path.join(input_dir,args.dataset, 'processed', 'test')
-        watermark_db_path = os.path.join(input_dir, args.dataset, 'processed', 'watermarks', args.db_name)
+        if args.set_name == 'templates':
+            inference_test_path = os.path.join(input_dir, args.dataset, 'processed', 'templates')
+        watermark_db_path = os.path.join(input_dir, args.dataset, 'processed', 'watermarks', db_name)
 
         if args.test_image_filename:
             filenames = [args.test_image_filename]
@@ -204,17 +230,23 @@ def main() -> None:
         processed = 0
         with torch.no_grad():
             for fname in filenames:
-
                 # 1. Get the true watermark message from the database
                 # remember watermaked images are stored as png but the db uses jpg or original extension
-                true_message = get_watermark_from_db(watermark_db_path, fname.replace('png','jpg'))
+                if args.dataset != 'ONOT':
+                    true_message = get_watermark_from_db(watermark_db_path, fname.replace('png','jpg'))
+                else:
+                    true_message = get_watermark_from_db(watermark_db_path, fname)
+                
                 if true_message is None:
                     print(f"Could not retrieve true watermark for {fname}. Skipping.")
                     continue
             
                 # 2. Read the watermarked image
                 wm_path = (output_save_dir / fname).with_suffix(".png")
-                img_path = Path(inference_test_path) / fname.replace('png','jpg') # original image path
+                if args.dataset != 'ONOT':
+                    img_path = Path(inference_test_path) / fname.replace('png','jpg') # original image path
+                else:
+                    img_path = Path(inference_test_path) / fname # original image path
 
                 if not img_path.exists():
                     print(f"[SKIP] Does not exist: {fname} in: {img_path}")
@@ -269,63 +301,97 @@ def main() -> None:
                 print("[TEST] No images were processed. Please check the filenames and paths.")
                 return
             
-            acc_np = np.array(acc_list, dtype=float)
+            acc_offline_mean = np.array(acc_list, dtype=float).mean()
+            acc_offline_std = np.array(acc_list, dtype=float).std() if processed>1 else 0.0
+            psnr_offine_mean = np.array(psnr_list, dtype=float).mean()
+            psnr_offine_std = np.array(psnr_list, dtype=float).std() if processed>1 else 0.0
+            ssim_offine_mean = np.array(ssim_list, dtype=float).mean()
+            ssim_offine_std = np.array(ssim_list, dtype=float).std() if processed>1 else 0.0
+
             print("\n--- Batch Watermark Extraction (from stored images) ---")
             print(f"Processed images : {processed}")
-            print(f"Accuracy mean : {acc_np.mean():.4f}")
-            print(f"Accuracy std  : {acc_np.std(ddof=1) if processed>1 else 0.0:.4f}")
-            print(f"Accuracy min  : {acc_np.min():.4f}")
-            print(f"Accuracy max  : {acc_np.max():.4f}")
-            print(f"PSNR mean : {np.array(psnr_list).mean():.4f}")
-            print(f"PSNR STD : {np.array(psnr_list).std(ddof=1) if processed>1 else 0.0:.4f}")
-            print(f"SSIM mean : {np.array(ssim_list).mean():.4f}")
-            print(f"SSIM STD : {np.array(ssim_list).std(ddof=1) if processed>1 else 0.0:.4f}")
+            print(f"Average Extracted Accuracy: {acc_offline_mean:.4f}")
+            print(f"Accuracy STD: {acc_offline_std:.4f}")
+            print(f"Average PSNR: {psnr_offine_mean:.4f}")
+            print(f"PSNR STD: {psnr_offine_std:.4f}")
+            print(f"Average SSIM: {ssim_offine_mean:.4f}")
+            print(f"SSIM STD: {ssim_offine_std:.4f}")
             print("---------------------------------------------------")
+
+            # open the results_summary.json file and strore this results there
+            results_filepath = base_path / "results_summary.json"
+            if results_filepath.exists():
+                with open(results_filepath, "r") as f:
+                    results_data = json.load(f)
+                    
+                results_data["accuracy_offline"] = acc_offline_mean.item()
+                results_data["accuracy_offline_std"] = acc_offline_mean.item()
+                results_data["psnr_offline"] = psnr_offine_mean.item()
+                results_data["psnr_offline_std"] = psnr_offine_std.item()
+                results_data["ssim_offline"] = ssim_offine_mean.item()
+                results_data["ssim_offline_std"] = ssim_offine_std.item()
+                
+                with open(results_filepath, "w") as f:
+                    json.dump(results_data, f, indent=2)
+                print(f"Results updated in: {results_filepath}")
+            else:
+                print(f"Results file not found, skipping update: {results_filepath}")
         return # Exit main 
     
     # --- END LOGIC FOR TEST MODE ---
     else:
         # Test dataloader
         inference_data_path = os.path.join(input_dir,args.dataset, 'processed', 'test')
-        watermark_db_path = os.path.join(input_dir,args.dataset, 'processed','watermarks', args.db_name)
+        if args.set_name == 'templates':
+            inference_data_path = os.path.join(input_dir, args.dataset, 'processed', 'templates')
+
+        watermark_db_path = os.path.join(input_dir,args.dataset, 'processed','watermarks', db_name)
         test_dataset = MIMData_inference(data_path=inference_data_path, db_path=watermark_db_path, num_message=message_N, message_size=message_L, 
                                         image_size=(im_size, im_size),dataset=args.dataset, msg_r=msg_range)
         
         test_dataloader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=8, pin_memory=True)
-        test_message_acc, test_psnr, test_ssim = inference(test_dataloader, encoder, decoder, message_N, device_id, msg_range,
-                                                        output_save_dir=output_save_dir, cal_psnr=cal_psnr, cal_ssim=cal_ssim)
+        test_message_acc, test_psnr, test_ssim, test_message_acc_std, test_psnr_std, test_ssim_std = inference(test_dataloader, encoder, decoder, message_N, 
+                                                                                                               device_id, msg_range, output_save_dir=output_save_dir, 
+                                                                                                               cal_psnr=cal_psnr, cal_ssim=cal_ssim)
 
         print(f"\n--- Inference results ---")
         print(f"Accuracy: {test_message_acc:.4f}")
+        print(f"Accuracy STD: {test_message_acc_std:.4f}")
         print(f"PSNR: {test_psnr:.4f}")
+        print(f"PSNR STD: {test_psnr_std:.4f}")
         print(f"SSIM: {test_ssim:.4f}")
+        print(f"SSIM STD: {test_ssim_std:.4f}")
+        print("-------------------------")
 
+        if args.set_name == 'test':
+            # Store the results in a JSON file 
+            results_data = {
+                "timestamp": datetime.now().isoformat(),
+                "model_name": 'stegaformer',  
+                "training_dataset": args.train_dataset,
+                "inference_dataset": args.dataset,
+                "experiment_name": args.exp_name,
+                "fine_tuned_icao": False,  # Assuming the model is fine-tuned
+                "OFIQ_score": 0.0,  # Placeholder for OFIQ score
+                "ICAO_compliance": False,  # Placeholder for ICAO compliance
+                "bpp": args.bpp,
+                "watermark_lenght": message_L*message_N,
+                "accuracy": test_message_acc.item(),
+                "accuracy_std": test_message_acc_std.item(),
+                "psnr": test_psnr.item(),
+                "psnr_std": test_psnr_std.item(),
+                "ssim": test_ssim.item(),
+                "ssim_std": test_ssim_std.item(),
+            }
 
-        # Store the results in a JSON file 
-        results_data = {
-            "timestamp": datetime.now().isoformat(),
-            "model_name": 'stegaformer',  
-            "training_dataset": args.train_dataset,
-            "inference_dataset": args.dataset,
-            "experiment_name": args.exp_name,
-            "fine_tuned_icao": False,  # Assuming the model is fine-tuned
-            "OFIQ_score": 0.0,  # Placeholder for OFIQ score
-            "ICAO_compliance": False,  # Placeholder for ICAO compliance
-            "bpp": args.bpp,
-            "watermark_lenght": message_L*message_N,
-            "accuracy": test_message_acc,
-            "psnr": test_psnr,
-            "ssim": test_ssim,
-        }
+            # Generate a unique filename based on the current timestamp and dataset
+            results_filepath = base_path / "results_summary.json"
 
-        # Generate a unique filename based on the current timestamp and dataset
-        results_filepath = base_path / "results_summary.json"
-
-        with open(results_filepath, "w") as f:
-            json.dump(results_data, f, indent=2)
-        
-        print(f"Results saved to: {results_filepath}")
-        make_output_writable("/app/output")
+            with open(results_filepath, "w") as f:
+                json.dump(results_data, f, indent=2)
+            
+            print(f"Results saved to: {results_filepath}")
+            make_output_writable("/app/output")
 
 
 if __name__ == '__main__':

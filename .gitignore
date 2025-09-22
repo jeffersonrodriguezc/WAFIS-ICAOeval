@@ -55,3 +55,7 @@ Thumbs.db
 
 # Quarto
 **/_site/
+
+# excel files
+*.xlsx
+*.xls

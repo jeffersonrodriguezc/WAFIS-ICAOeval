@@ -62,15 +62,18 @@ def _read_distance_column(fpath: Path) -> np.ndarray:
     return best.dropna().to_numpy(dtype=float)
 
 
-def load_distances(exp_path: Path, dataset: str, metric: str) -> Dict[str, Dict[str, np.ndarray]]:
+def load_distances(exp_path: Path, dataset: str, metric: str, FRModel: str) -> Dict[str, Dict[str, np.ndarray]]:
     """Carga los cuatro CSVs de distancias para un experimento+dataset+métrica."""
     files = {
         ('genuine', 'baseline'):     f"{metric}_genuine_distances_baseline.csv",
         ('genuine', 'watermarked'):  f"{metric}_genuine_distances_watermarked.csv",
+        #('genuine', 'watermarked_both'):  f"{metric}_genuine_distances_watermarked_both.csv",
         ('impostor', 'baseline'):    f"{metric}_impostor_distances_baseline.csv",
         ('impostor', 'watermarked'): f"{metric}_impostor_distances_watermarked.csv",
+        #('impostor', 'watermarked_both'): f"{metric}_impostor_distances_watermarked_both.csv",
     }
-    dataset_dir = Path(exp_path) / dataset
+    dataset_dir = Path(exp_path) / dataset / FRModel / 'distances'
+    print(f"Loading distances from {dataset_dir}")
     out = {'genuine': {}, 'impostor': {}}
 
     for (kind, state), fname in files.items():
@@ -88,7 +91,7 @@ def discover_experiments(root: Path, algorithm: str) -> List[Path]:
     algo_dir = root / algorithm
     if not algo_dir.is_dir():
         raise FileNotFoundError(f"Algorithm dir not found: {algo_dir}")
-    return [p for p in algo_dir.iterdir() if p.is_dir() and p.name.lower() != "plots"]
+    return [p for p in algo_dir.iterdir() if p.is_dir()]
 
 
 # ---------------- KDE ----------------
@@ -330,8 +333,10 @@ def main():
     parser.add_argument("--metric", type=str, default="cosine",
                         help="Prefijo de métrica usado en los CSVs (ej., cosine).")
     parser.add_argument("--datasets", type=str, nargs="+",
-                        default=["CFD", "facelab_london"],
+                        default=["CFD", "facelab_london", "LFW", "ONOT"],
                         help="Nombres de carpetas de datasets a incluir.")
+    parser.add_argument("--FRModel", type=str, default="facenet",
+                        help="Nombre de la carpeta del modelo de reconocimiento (ej., ArcFace).")
     parser.add_argument("--kde_points", type=int, default=512,
                         help="Número de puntos de la malla para KDE (default 512).")
     parser.add_argument("--bw_scale", type=float, default=1.0,
@@ -353,6 +358,7 @@ def main():
     # Rutas
     recognition_root = repo_root() / "experiments" / "output" / "recognition"
     experiments = discover_experiments(recognition_root, args.algorithm)
+    print(f"Found {len(experiments)} experiments under {recognition_root / args.algorithm}")
 
     # Por dataset, una lista de (bpp, data)
     per_dataset: Dict[str, List[Tuple[str, Dict]]] = {ds: [] for ds in args.datasets}
@@ -372,7 +378,7 @@ def main():
     # Carga datos
     for _, bpp_str, exp_path in exp_info:
         for ds in args.datasets:
-            data = load_distances(exp_path, ds, args.metric)
+            data = load_distances(exp_path, ds, args.metric, args.FRModel)
             if any(len(v) > 0 for section in data.values() for v in section.values()):
                 per_dataset[ds].append((bpp_str, data))
 

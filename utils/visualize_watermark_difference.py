@@ -47,7 +47,11 @@ def visualize_watermark_difference(
 
     # Get a sorted list of image files from the watermarked images directory.
     # It filters for common image file extensions. Sorting ensures consistent processing order.
-    image_files = sorted([f for f in os.listdir(original_images_dir) if f.endswith(('.jpg', '.jpeg'))])
+    
+    if args.dataset == 'ONOT':
+        image_files = sorted([f for f in os.listdir(original_images_dir) if f.endswith(('.png', '.PNG'))])
+    else:
+        image_files = sorted([f for f in os.listdir(original_images_dir) if f.endswith(('.jpg', '.jpeg'))])
 
     # Check if any image files were found. If not, print a message and exit the function.
     if not image_files:
@@ -60,7 +64,11 @@ def visualize_watermark_difference(
             # Construct full paths for the current original and watermarked images.
             original_img_path = os.path.join(original_images_dir, filename)
             ext = filename.split('.')[-1]
-            watermarked_img_path = os.path.join(watermarked_images_dir, filename.replace(ext, 'png'))
+            if args.dataset == 'ONOT':
+                # ONOT uses png images in test set
+                watermarked_img_path = os.path.join(watermarked_images_dir, filename)
+            else:
+                watermarked_img_path = os.path.join(watermarked_images_dir, filename.replace(ext, 'png'))
 
             # Open the images using Pillow and convert them to RGB format.
             # Converting to RGB ensures consistent channel structure for calculations.
@@ -150,7 +158,7 @@ if __name__ == '__main__':
     parser.add_argument('--exp_name', type=str, default='1_2_255_w16_learn_im',
                         help='Name of the experiment to visualize.')
     parser.add_argument('--dataset', type=str, default='facelab_london',
-                        choices=['facelab_london', 'CFD', 'ONOT'],
+                        choices=['facelab_london', 'CFD', 'ONOT', 'LFW'],
                         help='Dataset name.')
     parser.add_argument('--model_name', type=str, default='stegaformer',
                         help='Name of the model used for watermarking.')

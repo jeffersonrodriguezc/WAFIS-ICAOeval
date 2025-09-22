@@ -99,16 +99,23 @@ def check_uniqueness_and_count(db_path: str, bpp: int = 1) -> None:
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Verifies the uniqueness and count of watermarks in the database.')
     # Add an argument for the database file path.
-    parser.add_argument('--db_path', type=str, 
-                        # Set a default path for convenience.
-                        # The 'r' prefix creates a raw string, preventing backslashes from being
-                        # interpreted as escape sequences, which is crucial for Windows paths.
-                        default=r'..\datasets\facelab_london\processed\watermarks\watermarks_BBP_2_131072_13107.db',
-                        help='Full path to the SQLite watermark database file.')
+    parser.add_argument('--dataset_name', type=str, default='CFD')
     parser.add_argument('--bpp', type=int, default=1,
                         help='Bits per pixel (bpp) for the watermark, assuming bpp=1.')
     
     # Parse the command-line arguments provided by the user.
     args = parser.parse_args()
+    if args.bpp == 1:
+        db_name = f'watermarks_BBP_{args.bpp}_65536_500.db'
+    elif args.bpp == 2:
+        db_name = f'watermarks_BBP_{args.bpp}_131072_13107.db'
+    elif args.bpp == 3:
+        db_name = f'watermarks_BBP_{args.bpp}_196608_39321.db'
+    else:
+        raise ValueError("Unsupported bpp value. Supported values are 1, 2, or 3.")
+    
+    path_name = r'..\datasets\{}\processed\watermarks\{}'.format(args.dataset_name, db_name)
+    
+    db_path = Path(path_name)
     # Call the main function to perform the uniqueness and count checks using the provided DB path.
-    check_uniqueness_and_count(args.db_path, bpp=args.bpp)
+    check_uniqueness_and_count(db_path, bpp=args.bpp)
