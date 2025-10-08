@@ -61,7 +61,7 @@ Thumbs.db
 *.xls
 
 # modules/ files to ignore (excels, images, etc.)
-**/modules/**/runs/
+#**/modules/**/runs/
 
 # ignore all the experiments folders
-**/experiments/
+#**/experiments/
