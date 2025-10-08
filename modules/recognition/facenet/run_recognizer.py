@@ -114,6 +114,7 @@ def calculate_metrics(genuine_distances, impostor_distances, num_thresholds=None
 def main() -> None:
     parser = argparse.ArgumentParser(description="Face recognition using FaceNet")
     parser.add_argument('--dataset', type=str, choices=['facelab_london', 'CFD', 'ONOT', 'LFW'], default='CFD')
+    parser.add_argument('--train_dataset', type=str, choices=['celeba_hq', 'coco'], default='celeba_hq')
     parser.add_argument('--watermarking_model', type=str, default='stegaformer')
     parser.add_argument('--experiment_name', type=str, default='1_1_255_w16_learn_im')
     parser.add_argument('--roi', type=str, default='fit', 
@@ -133,8 +134,8 @@ def main() -> None:
     # so the path to the datasets is facial_data
     test_path = Path(f'facial_data/{args.dataset}/processed/test')
     templates_path = Path(f'facial_data/{args.dataset}/processed/templates')
-    watermarked_path = Path(f'output/watermarking/{args.watermarking_model}/{args.experiment_name}/inference/{args.dataset}/watermarked_images')
-    watermarked_templates = Path(f'output/watermarking/{args.watermarking_model}/{args.experiment_name}/inference/{args.dataset}/watermarked_templates')
+    watermarked_path = Path(f'output/watermarking/{args.watermarking_model}/{args.experiment_name}/inference/{args.train_dataset}/{args.dataset}/watermarked_images')
+    watermarked_templates = Path(f'output/watermarking/{args.watermarking_model}/{args.experiment_name}/inference/{args.train_dataset}/{args.dataset}/watermarked_templates')
 
     if not test_path.exists():
         print(f"Dataset path not found: {test_path}")
@@ -338,7 +339,7 @@ def main() -> None:
         print(f"Std deviation of raw distance for impostor pairs templates due to WM: {std_impostor_raw_distance_template}")
 
     # Store the distances in csv files
-    output_dir = Path(f'output/recognition/{args.watermarking_model}/{args.experiment_name}/{args.dataset}/facenet/distances')
+    output_dir = Path(f'output/recognition/{args.watermarking_model}/{args.experiment_name}/{args.train_dataset}/{args.dataset}/facenet/distances')
     output_dir.mkdir(parents=True, exist_ok=True)
     
     print(f"Saving results to {output_dir}...")
@@ -368,7 +369,7 @@ def main() -> None:
         impostor_wm_both_df.to_csv(output_dir / f'{args.metric}_impostor_distances_watermarked_both.csv', index=False)
     
     # Store the results in a new summary json file for recognition
-    recognition_summary_path = Path(f'output/recognition/{args.watermarking_model}/{args.experiment_name}/{args.dataset}/facenet')
+    recognition_summary_path = Path(f'output/recognition/{args.watermarking_model}/{args.experiment_name}/{args.train_dataset}/{args.dataset}/facenet')
     results_filepath = recognition_summary_path / f"results_summary.json"
 
     results_data = {}

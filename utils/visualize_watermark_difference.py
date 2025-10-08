@@ -7,6 +7,7 @@ from PIL import Image, ImageOps
 def visualize_watermark_difference(
     exp_name: str,
     dataset: str,
+    train_dataset: str,
     model_name: str,
     num_images_to_visualize: int,
     output_viz_dir: str
@@ -23,6 +24,8 @@ def visualize_watermark_difference(
                         path to the watermarked images and results.
         dataset (str): The name of the dataset. This is used to construct the
                        paths to both original and watermarked images.
+        train_dataset (str): The name of the dataset used for training. This is part of the path
+                             to the watermarked images.
         model_name (str): The name of the model used for watermarking. This is part of the path
                          to the watermarked images.
         num_images_to_visualize (int): The number of image pairs (original and watermarked)
@@ -32,7 +35,7 @@ def visualize_watermark_difference(
     """
     # Construct base paths for input and output directories based on conventions.
     # The 'base_output_dir' is where watermarked images and results are expected to be.
-    base_output_dir = f'../experiments/output/watermarking/{model_name}/{exp_name}/inference/{dataset}'
+    base_output_dir = f'../experiments/output/watermarking/{model_name}/{exp_name}/inference/{train_dataset}/{dataset}'
   
     # The 'original_images_dir' points to the location of the clean, original images.
     original_images_dir = f'../datasets/{dataset}/processed/test'
@@ -42,7 +45,7 @@ def visualize_watermark_difference(
 
     # Create the output directory for visualizations if it does not already exist.
     # 'exist_ok=True' prevents an error if the directory already exists.
-    output_viz_dir = os.path.join(output_viz_dir, f'{model_name}', 'differences', f'{exp_name}_{dataset}')
+    output_viz_dir = os.path.join(output_viz_dir, f'{model_name}', 'differences', f'{exp_name}_{train_dataset}_{dataset}')
     os.makedirs(output_viz_dir, exist_ok=True)
 
     # Get a sorted list of image files from the watermarked images directory.
@@ -160,6 +163,9 @@ if __name__ == '__main__':
     parser.add_argument('--dataset', type=str, default='facelab_london',
                         choices=['facelab_london', 'CFD', 'ONOT', 'LFW'],
                         help='Dataset name.')
+    parser.add_argument('--train_dataset', type=str, default='celeba_hq',
+                        choices=['celeba_hq', 'coco'],
+                        help='Dataset used for training.')
     parser.add_argument('--model_name', type=str, default='stegaformer',
                         help='Name of the model used for watermarking.')
     parser.add_argument('--num_images', type=int, default=5,
@@ -174,6 +180,7 @@ if __name__ == '__main__':
     visualize_watermark_difference(
         exp_name=args.exp_name,
         dataset=args.dataset,
+        train_dataset=args.train_dataset,
         model_name=args.model_name,
         num_images_to_visualize=args.num_images,
         output_viz_dir=args.output_dir

@@ -85,19 +85,28 @@ def parse_watermarking_json(p: Path) -> Dict[str, Any]:
 
     parts_low = [lower(x) for x in p.parts]
     dataset = data.get("inference_dataset")
+    train_dataset = data.get("training_dataset")
     model = data.get("model_name")
     bpp = data.get("bpp")
+    exp_name = data.get("experiment_name")
 
-    # Fallback inference from path .../{model}/{exp}/inference/{dataset}/results_summary.json
+    # Fallback inference from path .../{model}/{exp}/inference/{train_dataset}/{dataset}/results_summary.json
     if "inference" in parts_low:
         i = parts_low.index("inference")
-        if dataset is None and i + 1 < len(p.parts):
-            dataset = p.parts[i + 1]
+        if train_dataset is None and i + 1 < len(p.parts):
+            train_dataset = p.parts[i + 1]
+        if dataset is None and i + 2 < len(p.parts):
+            dataset = p.parts[i + 2]
         if model is None and i - 2 >= 0:
             model = p.parts[i - 2]
+        if exp_name is None and i - 1 >= 0:
+            exp_name = p.parts[i - 1]
+        
 
     return {
+        "train_dataset": lower(train_dataset or "unknown"),
         "dataset": lower(dataset or "unknown"),
+        "experiment": lower(exp_name or "unknown"),
         "model": lower(model or "unknown"),
         "bpp": bpp,
         "acc": safe_float(data.get("accuracy")),
@@ -118,7 +127,9 @@ def build_watermarking_df(records: List[Dict[str, Any]]) -> pd.DataFrame:
     rows = []
     for r in records:
         rows.append({
+            "Train Dataset": r["train_dataset"],
             "Dataset": r["dataset"],
+            "Experiment": r["experiment"],
             "Model": r["model"],
             "BPP": r["bpp"],
             "ACC %": fmt_pm(r["acc"], r["acc_std"], scale=100.0),
@@ -131,7 +142,7 @@ def build_watermarking_df(records: List[Dict[str, Any]]) -> pd.DataFrame:
     df = pd.DataFrame(rows)
     if not df.empty:
         df["BPP"] = pd.to_numeric(df["BPP"], errors="coerce")
-        df = df.sort_values(["Dataset", "Model", "BPP"], na_position="last").reset_index(drop=True)
+        df = df.sort_values(["Train Dataset","Dataset", "Experiment","Model", "BPP"], na_position="last").reset_index(drop=True)
     return df
 
 # ---------- discovery: recognition ----------
@@ -160,10 +171,11 @@ def parse_recognition_json(p: Path) -> List[Dict[str, Any]]:
 
     parts = [lower(x) for x in p.parts]
     dataset = "unknown"
+    train_dataset = "unknown"
     wm_model = "unknown"
     exp_name = None
 
-    # Expected: .../recognition/{wm_model}/{exp}/{dataset}/facenet/results_summary.json
+    # Expected: .../recognition/{wm_model}/{exp}/{train_dataset}/{dataset}/facenet/results_summary.json
     if "recognition" in parts:
         i = parts.index("recognition")
         if i + 1 < len(parts):
@@ -171,7 +183,9 @@ def parse_recognition_json(p: Path) -> List[Dict[str, Any]]:
         if i + 2 < len(parts):
             exp_name = parts[i + 2]
         if i + 3 < len(parts):
-            dataset = parts[i + 3]
+            train_dataset = parts[i + 3]
+        if i + 4 < len(parts):
+            dataset = parts[i + 4]
 
     bpp = parse_bpp_from_experiment(exp_name)
 
@@ -204,7 +218,9 @@ def parse_recognition_json(p: Path) -> List[Dict[str, Any]]:
     rows = []
     for probe_ref, tag in scenarios:
         rows.append({
+            "Train Dataset": train_dataset,
             "Dataset": dataset,
+            "Experiment": exp_name,
             "Model": wm_model,
             "BPP": bpp,
             "Model_recog": "Facenet",
@@ -214,6 +230,7 @@ def parse_recognition_json(p: Path) -> List[Dict[str, Any]]:
             "FAR at EER": get("FAR_at_EER", tag),
             "FRR at EER": get("FRR_at_EER", tag),
             "TAR at FAR ~0.01%": get("TAR_at_FAR", tag),
+            "Actual_FAR": get("Actual_FAR", tag),
             "AUC": get("AUC", tag),
         })
     return rows
@@ -224,7 +241,7 @@ def build_recognition_df(json_paths: List[Path]) -> pd.DataFrame:
         rows.extend(parse_recognition_json(p))
     df = pd.DataFrame(rows)
     if not df.empty:
-        df = df.sort_values(["Dataset", "Model", "BPP", "Probe-Reference"]).reset_index(drop=True)
+        df = df.sort_values(["Train Dataset", "Dataset", "Model", "Experiment", "BPP", "Probe-Reference"]).reset_index(drop=True)
     return df
 
 # ---------- main ----------

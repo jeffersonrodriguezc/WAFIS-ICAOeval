@@ -27,7 +27,7 @@ def make_output_writable(path):
             os.chmod(os.path.join(root, f), 0o666)  
     os.chmod(path, 0o777)
 
-def load_weights(encoder: Encoder, decoder: Decoder, save_path: Path, tag: str = 'acc') -> None:
+def load_weights_old(encoder: Encoder, decoder: Decoder, save_path: Path, tag: str = 'acc') -> None:
     """
     Load the model weights from the specified path.
     
@@ -46,6 +46,50 @@ def load_weights(encoder: Encoder, decoder: Decoder, save_path: Path, tag: str =
         encoder_ckpt = torch.load(resume_encoder_path)
         decoder_ckpt = torch.load(resume_decoder_path)
 
+        encoder.load_state_dict(encoder_ckpt['state_dict'])
+        decoder.load_state_dict(decoder_ckpt['state_dict'])    
+    
+    print(f"Loaded weights from {save_path} with tag '{tag}'")
+
+def load_weights(encoder: Encoder, decoder: Decoder, save_path: Path, tag: str = 'acc') -> None:
+    """
+    Load the model weights from the specified path.
+    """
+    resume_encoder_path = os.path.join(save_path, f'best_{tag}_encoder.pth.tar')
+    resume_decoder_path = os.path.join(save_path, f'best_{tag}_decoder.pth.tar')
+
+    if os.path.exists(resume_encoder_path) and os.path.exists(resume_decoder_path):
+        print(f"🔄 Restoring checkpoint from '{tag.upper()}'...")
+
+        encoder_ckpt = torch.load(resume_encoder_path)
+        decoder_ckpt = torch.load(resume_decoder_path)
+        
+        # --------------------------------------------------------------------------
+        # COMIENZO DEL PARCHE: Limpiar claves de Positional Encoding 2D incompatibles
+        # --------------------------------------------------------------------------
+        keys_to_remove = [
+            "msg_pos_embed_l0.cached_penc",
+            "msg_pos_embed_l1.cached_penc",
+            "msg_pos_embed_l2.cached_penc",
+        ]
+        
+        # Limpiar el state_dict del encoder
+        for key in keys_to_remove:
+            if key in encoder_ckpt['state_dict']:
+                print(f"🗑️ Eliminando clave incompatible: {key}")
+                del encoder_ckpt['state_dict'][key]
+        
+        # El decoder usa un Positional Encoding diferente, también requiere limpieza
+        decoder_keys_to_remove = ["msg_pos.cached_penc"]
+        for key in decoder_keys_to_remove:
+            if key in decoder_ckpt['state_dict']:
+                print(f"🗑️ Eliminando clave incompatible: {key}")
+                del decoder_ckpt['state_dict'][key]
+        # --------------------------------------------------------------------------
+        # FIN DEL PARCHE
+        # --------------------------------------------------------------------------
+
+        # La carga del state_dict ahora debería ser exitosa.
         encoder.load_state_dict(encoder_ckpt['state_dict'])
         decoder.load_state_dict(decoder_ckpt['state_dict'])    
     
@@ -177,7 +221,7 @@ def main() -> None:
 
     input_dir = Path('/app/facial_data')
     model_path = Path(f'/app/runs/{args.exp_name}/{args.train_dataset}/model')
-    base_path = Path('/app/output/stegaformer') / args.exp_name / "inference" / f"{args.dataset}"
+    base_path = Path('/app/output/stegaformer') / args.exp_name / "inference" / f"{args.train_dataset}" / f"{args.dataset}"
     output_save_dir = base_path / 'watermarked_images'
     if args.set_name == 'templates':
         output_save_dir = base_path / 'watermarked_templates'
