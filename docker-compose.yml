@@ -30,7 +30,7 @@ services:
       - ./modules/watermarking/stegaformer:/app:rw
     entrypoint: ["python", "run_watermark.py"]
     command: "python run_watermark.py $@"
-    profiles: ["inference"]
+    profiles: ["inference-stegaformer"]
 
   facenet_recognizer:
     image: timesler/jupyter-dl-gpu:latest
@@ -69,4 +69,38 @@ services:
     profiles: ["tensorboard"]
     command: ["tensorboard", "--logdir", "/app", "--host", "0.0.0.0", "--port", "6006"]
 
+  stegformer_train:
+    build:
+      context: ./modules/watermarking/stegformer
+      dockerfile: Dockerfile
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    volumes:
+      - ./datasets:/app/facial_data:ro
+      - ./modules/watermarking/stegformer:/app:rw
+    entrypoint: ["python", "train.py"]
+    command: "python train.py $@"
+    profiles: ["train-stegformer"]
 
+  stegformer_watermarking:
+    image: wafis-icaoeval-stegformer_train:latest
+    container_name: stegformer_watermarking_service
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    volumes:
+      - ./datasets:/app/facial_data:ro
+      - ./experiments/output/watermarking:/app/output:rw
+      - ./modules/watermarking/stegformer:/app:rw
+    entrypoint: ["python", "run_watermark.py"]
+    command: "python run_watermark.py $@"
+    profiles: ["inference-stegformer"]

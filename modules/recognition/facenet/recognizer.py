@@ -6,6 +6,7 @@ from PIL import Image
 from torchvision import transforms
 import numpy as np
 import os 
+import torch.nn.functional as F
 
 class FaceNetRecognizer:
     """
@@ -77,7 +78,9 @@ class FaceNetRecognizer:
             # Cosine distance
             emb1_norm = emb1 / emb1.norm(p=2, dim=0, keepdim=True)
             emb2_norm = emb2 / emb2.norm(p=2, dim=0, keepdim=True)
-            distance = 1 - torch.dot(emb1_norm, emb2_norm).item()
+            #cosine_similarity = F.cosine_similarity(emb1.unsqueeze(0), emb2.unsqueeze(0), dim=0)
+            cosine_similarity = torch.dot(emb1_norm, emb2_norm).item()
+            distance = 1 - cosine_similarity
         elif metric == 'euclidean':
             # Euclidean distance
             distance = torch.norm(emb1 - emb2).item()

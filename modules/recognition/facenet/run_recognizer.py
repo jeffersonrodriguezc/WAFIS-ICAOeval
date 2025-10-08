@@ -8,6 +8,8 @@ import json
 from tqdm import tqdm  # For progress bar
 from PIL import Image, ImageOps
 import numpy as np
+import torch
+from tqdm import tqdm
 
 def load_and_preprocess_image(image_path, img_size, img_norm=False):
     # Apply some operations before getting the embedding if needed, depend on the watermarking model
@@ -31,16 +33,48 @@ def get_embeddings(folder_path, image_files, img_size, face_recognizer_service):
             embeddings_by_identity[identity].append(embedding)
     return embeddings_by_identity
 
-def calculate_metrics(genuine_distances, impostor_distances):
+def calculate_tar_at_far(far_list, frr_list, target_far=0.0001): # Note: 0.01% = 0.0001
+    """
+    Calculates the TAR (1 - FRR) at a specific FAR threshold.
+    """
+    far_array = np.array(far_list)
+    frr_array = np.array(frr_list)
+    
+    # Find the indices where the FAR is less than or equal to the target.
+    indices = np.where(far_array <= target_far)[0]
+    
+    if len(indices) == 0:
+        # If no threshold meets the requirement, it cannot be reported.
+        # This can happen if your system is not good enough or if you have too little data.
+        print(f"Warning: No threshold found for a FAR <= {target_far*100}%.")
+        return None
+
+    # Of all the thresholds that meet the requirement, choose the one with the highest FAR
+    # (and therefore the lowest FRR), which corresponds to the last valid index.
+    best_index = indices[-1] # or max(indices)
+    
+    tar = 1 - frr_array[best_index]
+    
+    return {'TAR_at_FAR': round(tar * 100, 3),
+            'Actual_FAR': round(far_array[best_index] * 100, 5)}
+
+def calculate_metrics(genuine_distances, impostor_distances, num_thresholds=None):
     """Compute EER, FAR, and FRR based on genuine and impostor distances."""
     distances = np.concatenate([genuine_distances, impostor_distances])
     labels = np.concatenate([np.ones_like(genuine_distances), np.zeros_like(impostor_distances)])
 
     # Sort distances and calculate metrics for each threshold
-    sorted_distances = np.sort(distances)
+    
+    if num_thresholds is None:
+        thresholds_to_check = np.sort(distances)
+    else:
+        min_dist = np.min(distances)
+        max_dist = np.max(distances)
+        thresholds_to_check = np.linspace(min_dist, max_dist, num_thresholds)
+
     far_list, frr_list = [], []
 
-    for threshold in sorted_distances:
+    for threshold in tqdm(thresholds_to_check, desc="Thresholding for metrics calculation"):
         predictions = distances <= threshold
         tp = np.sum((predictions == 1) & (labels == 1))
         tn = np.sum((predictions == 0) & (labels == 0))
@@ -68,14 +102,19 @@ def calculate_metrics(genuine_distances, impostor_distances):
     
     auc = np.trapz(tpr_sorted, fpr_sorted)
 
+    TAR_metric = calculate_tar_at_far(far_list, frr_list, target_far=0.0001)
+
     return {'EER': round(eer*100,3), 
             'FAR_at_EER': round(far_list[eer_index]*100,3), 
             'FRR_at_EER': round(frr_list[eer_index]*100,3),
-            'AUC': round(auc, 3)}
+            'AUC': round(auc, 3),
+            'TAR_at_FAR': TAR_metric['TAR_at_FAR'],
+            'Actual_FAR': TAR_metric['Actual_FAR']}
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Face recognition using FaceNet")
-    parser.add_argument('--dataset', type=str, choices=['facelab_london', 'CFD', 'ONOT'], default='CFD')
+    parser.add_argument('--dataset', type=str, choices=['facelab_london', 'CFD', 'ONOT', 'LFW'], default='CFD')
+    parser.add_argument('--train_dataset', type=str, choices=['celeba_hq', 'coco'], default='celeba_hq')
     parser.add_argument('--watermarking_model', type=str, default='stegaformer')
     parser.add_argument('--experiment_name', type=str, default='1_1_255_w16_learn_im')
     parser.add_argument('--roi', type=str, default='fit', 
@@ -84,6 +123,8 @@ def main() -> None:
                         help='Size of the image before processing, used for cropping or fitting')
     parser.add_argument('--metric', type=str, default='cosine',
                         choices=['cosine', 'euclidean'])
+    parser.add_argument('--thresholds', type=int, default=None,
+                        help='Number of thresholds to evaluate for metrics calculation. If not set, all unique distances are used.')
     parser.add_argument('--device', type=str, default='cpu')
     args = parser.parse_args()
     
@@ -93,7 +134,8 @@ def main() -> None:
     # so the path to the datasets is facial_data
     test_path = Path(f'facial_data/{args.dataset}/processed/test')
     templates_path = Path(f'facial_data/{args.dataset}/processed/templates')
-    watermarked_path = Path(f'output/watermarking/{args.watermarking_model}/{args.experiment_name}/inference/{args.dataset}/watermarked_images')
+    watermarked_path = Path(f'output/watermarking/{args.watermarking_model}/{args.experiment_name}/inference/{args.train_dataset}/{args.dataset}/watermarked_images')
+    watermarked_templates = Path(f'output/watermarking/{args.watermarking_model}/{args.experiment_name}/inference/{args.train_dataset}/{args.dataset}/watermarked_templates')
 
     if not test_path.exists():
         print(f"Dataset path not found: {test_path}")
@@ -121,12 +163,21 @@ def main() -> None:
         ext = '.png'
         image_paths = list(test_path.glob(f'**/*{ext}'))
         template_paths = list(templates_path.glob(f'**/*{ext}'))
+
+    elif args.dataset == 'LFW':
+        ext = '.jpg'
+        image_paths = list(test_path.glob(f'**/*{ext}'))
+        template_paths = list(templates_path.glob(f'**/*{ext}'))
+    else:
+        raise ValueError(f"Unsupported dataset: {args.dataset}")
     
     # always the watermarked images are png
     watermarked_paths = list(watermarked_path.glob(f'**/*.png'))
+    watermarked_templates_paths = list(watermarked_templates.glob(f'**/*.png'))
     
     # get the embeddings
     templates_embs = get_embeddings(templates_path, template_paths, args.img_size, face_recognizer_service)
+    watermarked_templates_embs = get_embeddings(watermarked_templates, watermarked_templates_paths, args.img_size, face_recognizer_service)
     template_identities = set(templates_embs.keys())
 
     # Filter image_paths and watermarked_paths to only include identities present in templates
@@ -149,21 +200,34 @@ def main() -> None:
     impostor_distances_baseline = []
     genuine_distances_wm = []
     impostor_distances_wm = []
+    genuine_distances_wm_both = []
+    impostor_distances_wm_both = []
     genuine_variation_distances = []
     impostor_variation_distances = []
     genuine_raw_distances = []
     impostor_raw_distances  = []
+    genuine_raw_distances_template = []
+    impostor_raw_distances_template = []
+    genuine_variation_distances_template = []
+    impostor_variation_distances_template = []
 
     identities = list(templates_embs.keys())
-    for i, identity_a in enumerate(identities):
+    for i, identity_a in tqdm(enumerate(identities), total=len(identities), desc="Calculating distances"):
         for j, identity_b in enumerate(identities):
             # Genuine pairs (same person)
             if identity_a == identity_b:
-                #print(f"Calculating genuine distance for identity: {identity_a}")
+                #print(f"Calculating genuine distance for identity: {identity_a}") # original template - original probe
                 dist = face_recognizer_service.get_distance(templates_embs[identity_a][0], tests_embs[identity_b][0], metric=args.metric)
+                # original template - watermarked probe
                 dist_wm = face_recognizer_service.get_distance(templates_embs[identity_a][0], watermarked_embs[identity_b][0], metric=args.metric)
+                # watermarked template - watermarked probe
+                dist_wm_template = face_recognizer_service.get_distance(watermarked_templates_embs[identity_a][0], watermarked_embs[identity_b][0], metric=args.metric)
+                # raw distance between original probe and watermarked probe
                 raw_dist = face_recognizer_service.get_distance(tests_embs[identity_b][0], watermarked_embs[identity_b][0], metric=args.metric)
                 variation_dist = abs(dist - dist_wm)
+                # raw distance between original template and watermarked template
+                raw_dist_template = face_recognizer_service.get_distance(templates_embs[identity_a][0], watermarked_templates_embs[identity_a][0], metric=args.metric)
+                variation_dist_template = abs(dist - dist_wm_template)
                 
                 #print(f"Distance: {dist}")
                 #print(f"Distance WM: {dist_wm}")
@@ -172,17 +236,27 @@ def main() -> None:
 
                 genuine_distances_baseline.append(dist)
                 genuine_distances_wm.append(dist_wm)
+                genuine_distances_wm_both.append(dist_wm_template)
                 genuine_raw_distances.append(raw_dist)
                 genuine_variation_distances.append(variation_dist)
+                genuine_raw_distances_template.append(raw_dist_template)
+                genuine_variation_distances_template.append(variation_dist_template)
             
             # Impostor pairs (different persons)
             elif i < j:
                 if templates_embs[identity_a] and tests_embs[identity_b]:
                     #print(f"Calculating impostor distance for identities: {identity_a} and {identity_b}")
+                    # original template - original probe
                     dist = face_recognizer_service.get_distance(templates_embs[identity_a][0], tests_embs[identity_b][0], metric=args.metric)
+                    # original template - watermarked probe
                     dist_wm = face_recognizer_service.get_distance(templates_embs[identity_a][0], watermarked_embs[identity_b][0], metric=args.metric)
+                    # watermarked template - watermarked probe
+                    dist_wm_template = face_recognizer_service.get_distance(watermarked_templates_embs[identity_a][0], watermarked_embs[identity_b][0], metric=args.metric)
                     raw_dist = face_recognizer_service.get_distance(tests_embs[identity_a][0], watermarked_embs[identity_b][0], metric=args.metric)
                     variation_dist = abs(dist - dist_wm)
+                    # raw distance between original template and watermarked template
+                    raw_dist_template = face_recognizer_service.get_distance(templates_embs[identity_a][0], watermarked_templates_embs[identity_b][0], metric=args.metric)
+                    variation_dist_template = abs(dist - dist_wm_template)
 
                     #print(f"Distance: {dist}")
                     #print(f"Distance WM: {dist_wm}")
@@ -191,17 +265,26 @@ def main() -> None:
 
                     impostor_distances_baseline.append(dist)
                     impostor_distances_wm.append(dist_wm)
+                    impostor_distances_wm_both.append(dist_wm_template)
                     impostor_raw_distances.append(raw_dist)
                     impostor_variation_distances.append(variation_dist)
+                    impostor_raw_distances_template.append(raw_dist_template)
+                    impostor_variation_distances_template.append(variation_dist_template)
     
     # Compute metrics
-    metrics_baseline = calculate_metrics(genuine_distances_baseline, impostor_distances_baseline)
+    metrics_baseline = calculate_metrics(genuine_distances_baseline, impostor_distances_baseline, num_thresholds=args.thresholds)
     print("Metrics before watermarking:")
     print(metrics_baseline)
 
-    metrics_baseline_wm = calculate_metrics(genuine_distances_wm, impostor_distances_wm)
+    metrics_baseline_wm = calculate_metrics(genuine_distances_wm, impostor_distances_wm, num_thresholds=args.thresholds)
     print("Metrics after watermarking:")
     print(metrics_baseline_wm)
+
+    # Compute metrics for template watermarked
+    metrics_baseline_wm_template = calculate_metrics(genuine_distances_wm_both, impostor_distances_wm_both, num_thresholds=args.thresholds)
+    print("Metrics after watermarking both:")
+    print(metrics_baseline_wm_template)
+
 
     # Compute mean and std of the variation distances
     if genuine_variation_distances:
@@ -216,6 +299,19 @@ def main() -> None:
         print(f"Mean variation in impostor distances due to watermarking: {mean_variation_impostor}")
         print(f"Std deviation of variation in impostor distances due to watermarking: {std_variation_impostor}")
 
+    # Compute mean and std of the variation distances for watermarked templates and watermarked probes
+    if genuine_variation_distances_template:
+        mean_variation_genuine_template = np.round(np.mean(genuine_variation_distances_template) * 100, 3)
+        std_variation_genuine_template = np.round(np.std(genuine_variation_distances_template) * 100,3)
+        print(f"Mean variation in genuine distances due to watermarking process on both: {mean_variation_genuine_template}")
+        print(f"Std deviation of variation in genuine distances due to watermarking process on both: {std_variation_genuine_template}")
+
+    if impostor_variation_distances_template:
+        mean_variation_impostor_template = np.round(np.mean(impostor_variation_distances_template),3)     
+        std_variation_impostor_template = np.round(np.std(impostor_variation_distances_template),3)
+        print(f"Mean variation in impostor distances due to watermarking process on both: {mean_variation_impostor_template}")
+        print(f"Std deviation of variation in impostor distances due to watermarking process on both: {std_variation_impostor_template}")
+
     # Compute average and std raw distances
     if genuine_raw_distances:
         avg_genuine_raw_distance = np.round(np.mean(genuine_raw_distances),3)
@@ -229,8 +325,21 @@ def main() -> None:
         print(f"Average raw distance for impostor pairs : {avg_impostor_raw_distance}")
         print(f"Std deviation of raw distance for impostor pairs: {std_impostor_raw_distance}")
 
+    # Compute average and std raw distances for watermarked templates and watermarked probes
+    if genuine_raw_distances_template:
+        avg_genuine_raw_distance_template = np.round(np.mean(genuine_raw_distances_template),3)
+        std_genuine_raw_distance_template = np.round(np.std(genuine_raw_distances_template),3)
+        print(f"Average raw distance for genuine pairs templates due to WM: {avg_genuine_raw_distance_template}")
+        print(f"Std deviation of raw distance for genuine pairs templates due to WM: {std_genuine_raw_distance_template}")
+
+    if impostor_raw_distances_template:
+        avg_impostor_raw_distance_template = np.round(np.mean(impostor_raw_distances_template),3)
+        std_impostor_raw_distance_template = np.round(np.std(impostor_raw_distances_template),3)
+        print(f"Average raw distance for impostor pairs templates due to WM: {avg_impostor_raw_distance_template}")
+        print(f"Std deviation of raw distance for impostor pairs templates due to WM: {std_impostor_raw_distance_template}")
+
     # Store the distances in csv files
-    output_dir = Path(f'output/recognition/{args.watermarking_model}/{args.experiment_name}/{args.dataset}')
+    output_dir = Path(f'output/recognition/{args.watermarking_model}/{args.experiment_name}/{args.train_dataset}/{args.dataset}/facenet/distances')
     output_dir.mkdir(parents=True, exist_ok=True)
     
     print(f"Saving results to {output_dir}...")
@@ -249,21 +358,28 @@ def main() -> None:
     if impostor_distances_wm:
         impostor_wm_df = pd.DataFrame(impostor_distances_wm, columns=['distance'])
         impostor_wm_df.to_csv(output_dir / f'{args.metric}_impostor_distances_watermarked.csv', index=False)
+
+    if genuine_distances_wm_both:
+        # both watermarked
+        genuine_wm_both_df = pd.DataFrame(genuine_distances_wm_both, columns=['distance'])
+        genuine_wm_both_df.to_csv(output_dir / f'{args.metric}_genuine_distances_watermarked_both.csv', index=False)
+
+    if impostor_distances_wm_both:
+        impostor_wm_both_df = pd.DataFrame(impostor_distances_wm_both, columns=['distance'])
+        impostor_wm_both_df.to_csv(output_dir / f'{args.metric}_impostor_distances_watermarked_both.csv', index=False)
     
+    # Store the results in a new summary json file for recognition
+    recognition_summary_path = Path(f'output/recognition/{args.watermarking_model}/{args.experiment_name}/{args.train_dataset}/{args.dataset}/facenet')
+    results_filepath = recognition_summary_path / f"results_summary.json"
 
-    # Open the json file with the results and add the results for average distances
-    # the results file is at:
-    watermarking_summery_path = Path(f'/app/output/watermarking/{args.watermarking_model}') / args.experiment_name / "inference" / f"{args.dataset}"
-    results_filepath = watermarking_summery_path / f"results_summary.json"
-
-    with open(results_filepath, "r") as f:
-        results_data = json.load(f)
-    # Add the average distances to the results data
+    results_data = {}
     results_data['average_distances'] = {
         f'facenet_avg_var_dist_{args.metric}_genuine_due_watermark': mean_variation_genuine if genuine_variation_distances else None,
         f'facenet_avg_var_dist_{args.metric}_impostor_due_watermark': mean_variation_impostor if impostor_variation_distances else None,
         f'facenet_avg_raw_dist_{args.metric}_genuine_raw_vs_watermark': avg_genuine_raw_distance if genuine_raw_distances else None,
-        f'facenet_avg_raw_dist_{args.metric}_impostor_raw_vs_watermark': avg_impostor_raw_distance if impostor_raw_distances else None
+        f'facenet_avg_raw_dist_{args.metric}_impostor_raw_vs_watermark': avg_impostor_raw_distance if impostor_raw_distances else None,
+        f'facenet_avg_raw_dist_{args.metric}_genuine_raw_vs_watermark_template': avg_genuine_raw_distance_template if genuine_raw_distances_template else None,
+        f'facenet_avg_raw_dist_{args.metric}_impostor_raw_vs_watermark_template': avg_impostor_raw_distance_template if impostor_raw_distances_template else None
     }
 
     # Add the std of distances to the results data
@@ -271,7 +387,9 @@ def main() -> None:
         f'facenet_std_var_dist_{args.metric}_genuine_due_watermark': std_variation_genuine if genuine_variation_distances else None,
         f'facenet_std_var_dist_{args.metric}_impostor_due_watermark': std_variation_impostor if impostor_variation_distances else None,
         f'facenet_std_raw_dist_{args.metric}_genuine_raw_vs_watermark': std_genuine_raw_distance if genuine_raw_distances else None,
-        f'facenet_std_raw_dist_{args.metric}_impostor_raw_vs_watermark': std_impostor_raw_distance if impostor_raw_distances else None
+        f'facenet_std_raw_dist_{args.metric}_impostor_raw_vs_watermark': std_impostor_raw_distance if impostor_raw_distances else None,
+        f'facenet_std_raw_dist_{args.metric}_genuine_raw_vs_watermark_template': std_genuine_raw_distance_template if genuine_raw_distances_template else None,
+        f'facenet_std_raw_dist_{args.metric}_impostor_raw_vs_watermark_template': std_impostor_raw_distance_template if impostor_raw_distances_template else None
     }
 
     # Add the recognition metrics to the results data
@@ -283,7 +401,17 @@ def main() -> None:
         f'facenet_FRR_at_EER_baseline_{args.metric}': metrics_baseline['FRR_at_EER'],
         f'facenet_FRR_at_EER_watermarked_{args.metric}': metrics_baseline_wm['FRR_at_EER'],
         f'facenet_AUC_baseline_{args.metric}': metrics_baseline['AUC'],
-        f'facenet_AUC_watermarked_{args.metric}': metrics_baseline_wm['AUC']
+        f'facenet_AUC_watermarked_{args.metric}': metrics_baseline_wm['AUC'],
+        f'facenet_TAR_at_FAR_baseline_{args.metric}': metrics_baseline['TAR_at_FAR'],
+        f'facenet_TAR_at_FAR_watermarked_{args.metric}': metrics_baseline_wm['TAR_at_FAR'],
+        f'facenet_Actual_FAR_baseline_{args.metric}': metrics_baseline['Actual_FAR'],
+        f'facenet_Actual_FAR_watermarked_{args.metric}': metrics_baseline_wm['Actual_FAR'],
+        f'facenet_EER_watermarked_both_{args.metric}': metrics_baseline_wm_template['EER'],
+        f'facenet_FAR_at_EER_watermarked_both_{args.metric}': metrics_baseline_wm_template['FAR_at_EER'],
+        f'facenet_FRR_at_EER_watermarked_both_{args.metric}': metrics_baseline_wm_template['FRR_at_EER'],
+        f'facenet_AUC_watermarked_both_{args.metric}': metrics_baseline_wm_template['AUC'],
+        f'facenet_TAR_at_FAR_watermarked_both_{args.metric}': metrics_baseline_wm_template['TAR_at_FAR'],
+        f'facenet_Actual_FAR_watermarked_both_{args.metric}': metrics_baseline_wm_template['Actual_FAR']
     }
 
     # Save the updated results data back to the file
