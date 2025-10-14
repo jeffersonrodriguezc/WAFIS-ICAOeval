@@ -129,7 +129,6 @@ def inference(inference_loader, encoder, decoder, message_N, device_id, msg_rang
             enco_images_clamped = torch.clamp(enco_images,0,255)
             #print("max value:", enco_images_clamped.detach().max().item())
             #print("min value:", enco_images_clamped.detach().min().item())
-            
             deco_messages = decoder(enco_images_clamped)
             #please sigmoid first for the decoded message
             if msg_range == 1:
@@ -142,7 +141,6 @@ def inference(inference_loader, encoder, decoder, message_N, device_id, msg_rang
 
             ac = get_message_accuracy(messages, deco_messages, message_N)
             p, s = compute_image_score(images, enco_images, cal_psnr, cal_ssim)
-            
             acc.append(ac)
             psnr.append(p)
             ssim.append(s)
@@ -204,12 +202,17 @@ def main() -> None:
     elif args.bpp == 6:
         db_name = ""         
     elif args.bpp == 8:
-        db_name = ""   
+        db_name = "watermarks_BBP_8_131072_13107.db"
+        if args.set_name == 'templates':
+            db_name = "watermarks_BBP_8_131072_13107_templates.db"
     else:
         raise ValueError(f"Unsupported bpp: {args.bpp}")
     
     # Setting parameters and hyperparameters used in training
-    message_L = 16*args.bpp
+    if args.bpp == 8:
+        bpp = 2
+
+    message_L = 16*bpp
     message_N = 64*64
     im_size = args.img_size
     scale = args.msg_scale
@@ -334,10 +337,10 @@ def main() -> None:
                     
                     # optional info
                     #print(f"Decoded message shape: {decoded_message.shape}")
-                    #print(f"Decoded message: {decoded_message}")
+                    print(f"Decoded message: {decoded_message}")
                     # The decoder output shape might be (batch_size, message_N, msg_L)
                     #print(f"True message shape: {true_message_reshaped_tensor.shape}")
-                    #print(f"True message: {true_message_reshaped_tensor}")
+                    print(f"True message: {true_message_reshaped_tensor}")
 
                     return  
 

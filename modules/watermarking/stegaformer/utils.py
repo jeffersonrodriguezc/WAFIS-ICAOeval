@@ -176,6 +176,7 @@ def get_message_accuracy(
         for i in range(msg_num):
             cur_deco_msg = torch.round(deco_msg[:, i, :])
             correct_pred = torch.sum((cur_deco_msg - msg[:, i, :]) == 0, dim=1)
+            #print(cur_deco_msg)
             bit_acc += torch.sum(correct_pred).numpy() / cur_deco_msg.numel()
         bit_acc /= msg_num
 
@@ -201,7 +202,10 @@ def get_watermark_from_db(db_path: str, filename: str) -> torch.Tensor:
             # Convert the string to a tensor of floats
             watermark_str = result[0]
             # Ensure it's a list of floats 
-            message_list = [float(bit) for bit in watermark_str]
+            if ',' in watermark_str:
+                message_list = [float(bit) for bit in watermark_str.split(',')]
+            else:   
+                message_list = [float(bit) for bit in watermark_str]
             return np.array(message_list, dtype=np.float32)
         else:
             print(f"Watermark not found for filename: {filename} in {db_path}")
@@ -332,7 +336,15 @@ class MIMData_inference(Dataset):
 
         if watermark_str:
             # Convert the watermark string ('0101...') to a NumPy array of floats (0.0 or 1.0)
-            messages_flat = np.array(list(watermark_str)).astype(np.float32)
+            # for bpp > 3 the watermark is stored as comma-separated values
+            if self.msg_range > 1:
+                messages_flat = np.array([float(bit) for bit in watermark_str.split(',')]).astype(np.float32)
+            else:
+                messages_flat = np.array(list(watermark_str)).astype(np.float32)
+            
+            # Debug: Print the loaded watermark for verification
+            #print(filename)
+            #print(f"Loaded watermark for {filename}: {messages_flat}")
             # Reshape the flat array to the expected (num_message, message_size) format (e.g., 4096, 16)
             messages = messages_flat.reshape((self.m_num, self.m_size))
 

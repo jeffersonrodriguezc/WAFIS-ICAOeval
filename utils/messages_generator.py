@@ -16,7 +16,7 @@ def extract_user_id(filename: str) -> str:
     # first part of the filename before the underscore is considered the user ID
     return filename.split('_')[0]
 
-def generate_perturbed_watermark(base_watermark: np.ndarray, user_seed: int, flip_bits_count: int) -> np.ndarray:
+def generate_perturbed_watermark(base_watermark: np.ndarray, user_seed: int, flip_bits_count: int, bpp : int = 1, msg_range: int = 1) -> np.ndarray:
     """
     Generate a perturbed version of the base watermark by flipping a specified number of bits based on a user seed.
     """
@@ -32,11 +32,23 @@ def generate_perturbed_watermark(base_watermark: np.ndarray, user_seed: int, fli
     indices_to_flip = rng.choice(watermark_length, size=flip_bits_count, replace=False)
 
     user_watermark_flat = watermark_flat.copy()
-    # Flip the bits at the selected indices with XOR operation with 1
-    # WARNING this is only for binary watermarks (0s and 1s)
-    # If the watermark is not binary, this will not work as expected
-    user_watermark_flat[indices_to_flip] = 1 - user_watermark_flat[indices_to_flip]
+    #print('BPP at the end of function:', bpp)
+    if bpp > 3:
+        # For bpp <= 3, we assume binary watermarks (0s and 1s)
+        for idx in indices_to_flip:
+            current_value = user_watermark_flat[idx]
+            # Generate a new value different from the current one
+            new_value = rng.integers(low=0, high=msg_range+1)
+            while new_value == current_value:
+                new_value = rng.integers(low=0, high=msg_range+1)
+            user_watermark_flat[idx] = new_value
+    else:
+        # Flip the bits at the selected indices with XOR operation with 1
+        # WARNING this is only for binary watermarks (0s and 1s)
+        # If the watermark is not binary, this will not work as expected
+        user_watermark_flat[indices_to_flip] = 1 - user_watermark_flat[indices_to_flip]
 
+    #print(user_watermark_flat)
     return user_watermark_flat
 
 def create_watermark_db(output_filepath: str):
@@ -85,12 +97,19 @@ def main(
         return
 
     # Define the shape and length of the watermark based on message_n and message_l
-    BBP = bbp # Assuming message_l=16 y image_size=256x256 -> 16*4096 / (256*256) = 1
-    WATERMARK_LENGTH = message_n * (message_l*bbp) # 65536, bbp=1
+    #BBP = bbp # Assuming message_l=16 y image_size=256x256 -> 16*4096 / (256*256) = 1
+    
+    if bbp == 8:
+        BBP = 2
+    else:
+        BBP = bbp.copy()
+    
+    WATERMARK_LENGTH = message_n * (message_l*BBP) # 65536, bbp=1
+    print(f"Generating watermarks of length {WATERMARK_LENGTH} for each user in the dataset.")
 
-    output_filename = f"watermarks_BBP_{BBP}_{WATERMARK_LENGTH}_{flip_bits_count}.db"
+    output_filename = f"watermarks_BBP_{bbp}_{WATERMARK_LENGTH}_{flip_bits_count}.db"
     if set_name == 'templates':
-        output_filename = f"watermarks_BBP_{BBP}_{WATERMARK_LENGTH}_{flip_bits_count}_templates.db"
+        output_filename = f"watermarks_BBP_{bbp}_{WATERMARK_LENGTH}_{flip_bits_count}_templates.db"
         
     output_filepath = os.path.join(output_dir, output_filename)
 
@@ -105,6 +124,7 @@ def main(
     # This will be the base watermark that is perturbed for each user
     global_base_rng = np.random.default_rng(seed=42) # Fixed seed for reproducibility
     global_base_watermark = global_base_rng.integers(low=0, high=msg_range+1, size=WATERMARK_LENGTH)
+    #print(f"Generated global base watermark with seed 42: {global_base_watermark}")
 
     # Dicctionary to store user-specific watermarks
     user_watermarks_map = {} # {user_id: np.ndarray(65536)}
@@ -140,10 +160,15 @@ def main(
         
         # Generate a user-specific watermark by perturbing the global base watermark
         user_specific_watermark = generate_perturbed_watermark(
-            global_base_watermark, user_seed, flip_bits_count
+            global_base_watermark, user_seed, flip_bits_count, bbp, msg_range
         )
-        
-        watermark_str = ''.join(map(str, user_specific_watermark))
+        #print(f"len of the perturbed watermark: {len(user_specific_watermark)}")
+        if bbp > 3:
+            # Convert to string with commas separating values
+            watermark_str = ','.join(map(str, user_specific_watermark))
+        else:
+            watermark_str = ''.join(map(str, user_specific_watermark))
+            
         cursor.execute("INSERT INTO watermarks (image_filename, watermark_data) VALUES (?, ?)", (filename, watermark_str))
         conn.commit()
     conn.close() # Close the database connection

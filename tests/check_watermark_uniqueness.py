@@ -31,6 +31,7 @@ def check_uniqueness_and_count(db_path: str, bpp: int = 1) -> None:
         # Fetch all results of the executed query. This returns a list of tuples,
         # where each tuple represents a row and contains the watermark data.
         all_watermarks = cursor.fetchall() # Retrieves a list of tuples, e.g., [('0101...',), ('1010...',)]
+        #print(all_watermarks[0])
 
         # Check if any watermarks were retrieved.
         if not all_watermarks:
@@ -74,12 +75,19 @@ def check_uniqueness_and_count(db_path: str, bpp: int = 1) -> None:
         # This assumes all watermarks should have the same expected length.
         if total_entries > 0:
             # Get the length of the first watermark string as a sample.
-            sample_watermark_length = len(all_watermarks[0][0])
+            # for bpp > 3 the watermark is stored as comma-separated values
+            if bpp > 3:
+                sample_watermark_length = len(all_watermarks[0][0].split(','))
+            else:
+                sample_watermark_length = len(all_watermarks[0][0])
             #print(all_watermarks[0][0])
             print(f"Length of a sample watermark: {sample_watermark_length} bits.")
             
             # Define the expected length based on your generation parameters (message_n * message_l).
-            EXPECTED_LENGTH = 4096 * 16 * bpp # Based on 256x256 @ 1 bpp (64*64*16)
+            if bpp == 8:
+                EXPECTED_LENGTH = 4096 * 16 * 2 # Based on 256x256 @ 8 bpp (64*64*16*8)
+            else:
+                EXPECTED_LENGTH = 4096 * 16 * bpp # Based on 256x256 @ 1 bpp (64*64*16)
             # Check if the sample watermark's length matches the expected length.
             if sample_watermark_length == EXPECTED_LENGTH:
                 print(f"✅ Watermark length matches the expected length ({EXPECTED_LENGTH} bits).")
@@ -111,6 +119,8 @@ if __name__ == '__main__':
         db_name = f'watermarks_BBP_{args.bpp}_131072_13107.db'
     elif args.bpp == 3:
         db_name = f'watermarks_BBP_{args.bpp}_196608_39321.db'
+    elif args.bpp == 8:
+        db_name = f'watermarks_BBP_{args.bpp}_131072_13107.db'
     else:
         raise ValueError("Unsupported bpp value. Supported values are 1, 2, or 3.")
     
