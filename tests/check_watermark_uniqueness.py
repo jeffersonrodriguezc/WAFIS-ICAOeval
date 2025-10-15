@@ -86,6 +86,8 @@ def check_uniqueness_and_count(db_path: str, bpp: int = 1) -> None:
             # Define the expected length based on your generation parameters (message_n * message_l).
             if bpp == 8:
                 EXPECTED_LENGTH = 4096 * 16 * 2 # Based on 256x256 @ 8 bpp (64*64*16*8)
+            elif bpp == 6:
+                EXPECTED_LENGTH = 4096 * 16 * 3 # Based on 256x256 @ 6 bpp (64*64*16*6/2)
             else:
                 EXPECTED_LENGTH = 4096 * 16 * bpp # Based on 256x256 @ 1 bpp (64*64*16)
             # Check if the sample watermark's length matches the expected length.
@@ -121,6 +123,8 @@ if __name__ == '__main__':
         db_name = f'watermarks_BBP_{args.bpp}_196608_39321.db'
     elif args.bpp == 8:
         db_name = f'watermarks_BBP_{args.bpp}_131072_13107.db'
+    elif args.bpp == 6:
+        db_name = f'watermarks_BBP_{args.bpp}_196608_39321.db'
     else:
         raise ValueError("Unsupported bpp value. Supported values are 1, 2, or 3.")
     
