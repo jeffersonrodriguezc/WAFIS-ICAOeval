@@ -220,7 +220,8 @@ def get_watermark_from_db(db_path: str, filename: str) -> torch.Tensor:
 def load_and_preprocess_image(image_path: Path, 
                               im_size: int, 
                               img_norm: bool, 
-                              device_id: int) -> torch.Tensor:
+                              device_id: int,
+                              image_format: str = 'png') -> torch.Tensor:
     """
     Loads an image from path and preprocesses it for model input.
     Args:
@@ -231,12 +232,22 @@ def load_and_preprocess_image(image_path: Path,
         torch.Tensor: Preprocessed image tensor.
     """
     # Load and process the cover image
-    img = Image.open(image_path).convert('RGB')
-    img_cover = ImageOps.fit(img, (im_size,im_size))
-    if img_norm:
-        img_cover = np.array(img_cover, dtype=np.float32) / 255.0
+    if image_format == 'png':
+        img = Image.open(image_path).convert('RGB')
+        img_cover = ImageOps.fit(img, (im_size,im_size))
+        if img_norm:
+            img_cover = np.array(img_cover, dtype=np.float32) / 255.0
+        else:
+            img_cover = np.array(img_cover, dtype=np.float32)
+
+    elif image_format == 'npy':
+        img_cover = np.load(image_path)
+        #img_array = np.clip(img_array, 0, 255)
+        if img_norm:
+            img_cover = img_cover / 255.0       
     else:
-        img_cover = np.array(img_cover, dtype=np.float32)
+        raise ValueError(f"Unsupported image format: {image_format}")
+    
     image_tensor = transforms.ToTensor()(img_cover)
 
     return image_tensor.unsqueeze(0).cuda(device_id) # Add batch dimension and move to GPU

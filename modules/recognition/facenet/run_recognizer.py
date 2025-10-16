@@ -11,24 +11,28 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-def load_and_preprocess_image(image_path, img_size, img_norm=False):
+def load_and_preprocess_image(image_path, img_size, img_norm=False, image_format='png'):
     # Apply some operations before getting the embedding if needed, depend on the watermarking model
-    img = Image.open(image_path).convert('RGB')
-    img_cover = ImageOps.fit(img, (img_size, img_size))
-    
+    if image_format == 'png':
+        img = Image.open(image_path).convert('RGB')
+        img_cover = ImageOps.fit(img, (img_size, img_size))
+
+    elif image_format == 'npy':
+        img_cover = np.load(image_path).astype(np.float32)
+
     return img_cover
 
 def get_identity_from_filename(filename):
     return os.path.splitext(filename.split('_')[0])[0]
 
-def get_embeddings(folder_path, image_files, img_size, face_recognizer_service):
+def get_embeddings(folder_path, image_files, img_size, face_recognizer_service, image_format='png',
+                   debug_img=False):
     """Generate embeddings for all images in the folder."""
     embeddings_by_identity = defaultdict(list)
     for img_path in tqdm(image_files, desc=f"Generating embeddings for {folder_path.name}"):
         identity = get_identity_from_filename(img_path.name)
-        img = load_and_preprocess_image(img_path, img_size)
-        #print(identity, img_path, img.shape)
-        embedding = face_recognizer_service.get_embedding(img)
+        img = load_and_preprocess_image(img_path, img_size, image_format=image_format)
+        embedding = face_recognizer_service.get_embedding(img, debug_img=debug_img)
         if embedding is not None:
             embeddings_by_identity[identity].append(embedding)
     return embeddings_by_identity
@@ -125,17 +129,30 @@ def main() -> None:
                         choices=['cosine', 'euclidean'])
     parser.add_argument('--thresholds', type=int, default=None,
                         help='Number of thresholds to evaluate for metrics calculation. If not set, all unique distances are used.')
+    parser.add_argument('--format_evaluation', type=str, default='offline', 
+                        choices=['offline', 'online'],
+                        help='Format of the evaluation, offline (all images in png format) or online (npy arrays stored during watermarking)')
+    parser.add_argument('--use_mtcnn', action='store_true', default=False)
+    parser.add_argument('--debug_img', action='store_true', default=False)
     parser.add_argument('--device', type=str, default='cpu')
     args = parser.parse_args()
-    
-    # Initialize the FaceNet recognizer
-    face_recognizer_service = FaceNetRecognizer(device=args.device)
+
+    if args.format_evaluation == 'offline':
+        image_format = 'png'    
+    elif args.format_evaluation == 'online':
+        image_format = 'npy'
     
     # so the path to the datasets is facial_data
     test_path = Path(f'facial_data/{args.dataset}/processed/test')
     templates_path = Path(f'facial_data/{args.dataset}/processed/templates')
     watermarked_path = Path(f'output/watermarking/{args.watermarking_model}/{args.experiment_name}/inference/{args.train_dataset}/{args.dataset}/watermarked_images')
     watermarked_templates = Path(f'output/watermarking/{args.watermarking_model}/{args.experiment_name}/inference/{args.train_dataset}/{args.dataset}/watermarked_templates')
+    # path for output images
+    output_images_path = Path(f'output/recognition/{args.watermarking_model}/{args.experiment_name}/{args.train_dataset}/{args.dataset}/facenet/images')
+
+    # Initialize the FaceNet recognizer
+    face_recognizer_service = FaceNetRecognizer(device=args.device, image_format=image_format, use_mtcnn=args.use_mtcnn, 
+                                                save_images_path = output_images_path)
 
     if not test_path.exists():
         print(f"Dataset path not found: {test_path}")
@@ -171,13 +188,20 @@ def main() -> None:
     else:
         raise ValueError(f"Unsupported dataset: {args.dataset}")
     
-    # always the watermarked images are png
-    watermarked_paths = list(watermarked_path.glob(f'**/*.png'))
-    watermarked_templates_paths = list(watermarked_templates.glob(f'**/*.png'))
+    if args.format_evaluation == 'offline':
+        # offline evaluation, all images are png
+        watermarked_paths = list(watermarked_path.glob(f'**/*.{image_format}'))
+        watermarked_templates_paths = list(watermarked_templates.glob(f'**/*.{image_format}'))
+    elif args.format_evaluation == 'online':
+        # online evaluation, all images are npy
+        watermarked_paths = list(watermarked_path.glob(f'**/*.{image_format}'))
+        watermarked_templates_paths = list(watermarked_templates.glob(f'**/*.{image_format}'))
+    else:
+        raise ValueError(f"Unsupported evaluation format: {args.format_evaluation}")
     
     # get the embeddings
+    watermarked_templates_embs = get_embeddings(watermarked_templates, watermarked_templates_paths, args.img_size, face_recognizer_service, image_format=image_format)
     templates_embs = get_embeddings(templates_path, template_paths, args.img_size, face_recognizer_service)
-    watermarked_templates_embs = get_embeddings(watermarked_templates, watermarked_templates_paths, args.img_size, face_recognizer_service)
     template_identities = set(templates_embs.keys())
 
     # Filter image_paths and watermarked_paths to only include identities present in templates
@@ -185,7 +209,8 @@ def main() -> None:
     filtered_watermarked_paths = [p for p in watermarked_paths if get_identity_from_filename(p.name) in template_identities]
 
     tests_embs = get_embeddings(test_path, filtered_image_paths, args.img_size, face_recognizer_service)
-    watermarked_embs = get_embeddings(watermarked_path, filtered_watermarked_paths, args.img_size, face_recognizer_service)
+    watermarked_embs = get_embeddings(watermarked_path, filtered_watermarked_paths, args.img_size, face_recognizer_service, image_format=image_format, 
+                                      debug_img=args.debug_img)
     
     print(f"Number of identities in templates: {len(templates_embs)}")
     print(f"Example identities in templates: {list(templates_embs.keys())[:5]}")
@@ -345,28 +370,50 @@ def main() -> None:
     print(f"Saving results to {output_dir}...")
     if genuine_distances_baseline:
         genuine_df = pd.DataFrame(genuine_distances_baseline, columns=['distance'])
-        genuine_df.to_csv(output_dir / f'{args.metric}_genuine_distances_baseline.csv', index=False)
+        if args.format_evaluation == 'offline':
+            # Save as csv
+            genuine_df.to_csv(output_dir / f'{args.metric}_genuine_distances_baseline.csv', index=False)
+        elif args.format_evaluation == 'online':
+            # Save with npy tag
+            genuine_df.to_csv(output_dir / f'{args.metric}_genuine_distances_baseline_online.csv', index=False)
         
     if impostor_distances_baseline:
         impostor_df = pd.DataFrame(impostor_distances_baseline, columns=['distance'])
-        impostor_df.to_csv(output_dir / f'{args.metric}_impostor_distances_baseline.csv', index=False)
+        if args.format_evaluation == 'offline':
+            # Save as csv
+            impostor_df.to_csv(output_dir / f'{args.metric}_impostor_distances_baseline.csv', index=False)
+        elif args.format_evaluation == 'online':
+            # Save with npy tag
+            impostor_df.to_csv(output_dir / f'{args.metric}_impostor_distances_baseline_online.csv', index=False)
     
     if genuine_distances_wm:
         genuine_wm_df = pd.DataFrame(genuine_distances_wm, columns=['distance'])
-        genuine_wm_df.to_csv(output_dir / f'{args.metric}_genuine_distances_watermarked.csv', index=False)
+        if args.format_evaluation == 'offline':
+            genuine_wm_df.to_csv(output_dir / f'{args.metric}_genuine_distances_watermarked.csv', index=False)
+        elif args.format_evaluation == 'online':
+            genuine_wm_df.to_csv(output_dir / f'{args.metric}_genuine_distances_watermarked_online.csv', index=False)
 
     if impostor_distances_wm:
         impostor_wm_df = pd.DataFrame(impostor_distances_wm, columns=['distance'])
-        impostor_wm_df.to_csv(output_dir / f'{args.metric}_impostor_distances_watermarked.csv', index=False)
+        if args.format_evaluation == 'offline':
+            impostor_wm_df.to_csv(output_dir / f'{args.metric}_impostor_distances_watermarked.csv', index=False)
+        elif args.format_evaluation == 'online':
+            impostor_wm_df.to_csv(output_dir / f'{args.metric}_impostor_distances_watermarked_online.csv', index=False)
 
     if genuine_distances_wm_both:
         # both watermarked
         genuine_wm_both_df = pd.DataFrame(genuine_distances_wm_both, columns=['distance'])
-        genuine_wm_both_df.to_csv(output_dir / f'{args.metric}_genuine_distances_watermarked_both.csv', index=False)
+        if args.format_evaluation == 'offline': 
+            genuine_wm_both_df.to_csv(output_dir / f'{args.metric}_genuine_distances_watermarked_both.csv', index=False)
+        elif args.format_evaluation == 'online':
+            genuine_wm_both_df.to_csv(output_dir / f'{args.metric}_genuine_distances_watermarked_both_online.csv', index=False)
 
     if impostor_distances_wm_both:
         impostor_wm_both_df = pd.DataFrame(impostor_distances_wm_both, columns=['distance'])
-        impostor_wm_both_df.to_csv(output_dir / f'{args.metric}_impostor_distances_watermarked_both.csv', index=False)
+        if args.format_evaluation == 'offline':
+            impostor_wm_both_df.to_csv(output_dir / f'{args.metric}_impostor_distances_watermarked_both.csv', index=False)
+        elif args.format_evaluation == 'online':
+            impostor_wm_both_df.to_csv(output_dir / f'{args.metric}_impostor_distances_watermarked_both_online.csv', index=False)
     
     # Store the results in a new summary json file for recognition
     recognition_summary_path = Path(f'output/recognition/{args.watermarking_model}/{args.experiment_name}/{args.train_dataset}/{args.dataset}/facenet')
@@ -416,8 +463,13 @@ def main() -> None:
 
     # Save the updated results data back to the file
     # new_path = results_filepath.with_name("results_summary_with_recognition.json")
-    with open(results_filepath, "w") as f:
-        json.dump(results_data, f, indent=2)
+    if args.format_evaluation == 'offline':
+        with open(results_filepath, "w") as f:
+            json.dump(results_data, f, indent=2)
+    elif args.format_evaluation == 'online':
+        new_path = results_filepath.with_name("results_summary_online.json")
+        with open(new_path, "w") as f:
+            json.dump(results_data, f, indent=2)
 
 if __name__ == '__main__':
     main()

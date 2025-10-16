@@ -101,6 +101,9 @@ def main(
     
     if bbp == 8:
         BBP = 2
+
+    elif bbp == 6:
+        BBP = 3
     else:
         BBP = bbp.copy()
     

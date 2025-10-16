@@ -17,6 +17,8 @@ datasets/
 data/
 *.zip
 *.tar.gz
+*.npy
+**/images/
 
 # models and results
 **/model/

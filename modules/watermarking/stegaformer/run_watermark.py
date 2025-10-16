@@ -110,7 +110,7 @@ def compute_image_score(cover, generated, cal_psnr, cal_ssim):
     
     return p, s
 
-def inference(inference_loader, encoder, decoder, message_N, device_id, msg_range, output_save_dir, cal_psnr, cal_ssim):
+def inference(inference_loader, encoder, decoder, message_N, device_id, msg_range, output_save_dir, cal_psnr, cal_ssim, save_format='png'):
     encoder.eval()
     decoder.eval()
 
@@ -149,13 +149,22 @@ def inference(inference_loader, encoder, decoder, message_N, device_id, msg_rang
             for j in range(enco_images_clamped.shape[0]):
                 current_filename = filenames[j]
                 save_path_full = output_save_dir / current_filename
-                save_path_full = save_path_full.with_suffix(".png")  # store in PNG
-                print(f"Saving watermarked image to {save_path_full}")
-                #save_image(enco_images_clamped[j].cpu(), save_path_full, normalize=True, range=(0, 255)) #
-                pil = to_pil_image(enco_images_clamped[j].to(torch.uint8))  # C,H,W -> PIL espera C,H,W uint8
-                #pil = torch.clamp(torch.round(enco_images_clamped[j]), 0, 255).to(torch.uint8)
-                #pil = to_pil_image(pil.cpu())  # C,H,W -> PIL espera C,H,W uint8
-                pil.save(save_path_full, format="PNG", compress_level=0)
+                if save_format == 'png':
+                    save_path_full = save_path_full.with_suffix(".png")  # store in PNG
+                    print(f"Saving watermarked image to {save_path_full}")
+                    #save_image(enco_images_clamped[j].cpu(), save_path_full, normalize=True, range=(0, 255)) #
+                    pil = to_pil_image(enco_images_clamped[j].to(torch.uint8))  # C,H,W -> PIL espera C,H,W uint8
+                    #pil = torch.clamp(torch.round(enco_images_clamped[j]), 0, 255).to(torch.uint8)
+                    #pil = to_pil_image(pil.cpu())  # C,H,W -> PIL espera C,H,W uint8
+                    pil.save(save_path_full, format="PNG", compress_level=0)
+                elif save_format == 'npy':
+                    arr = enco_images_clamped[j].detach().cpu().numpy().astype("float32")  # C,H,W en [0,255]
+                    arr = np.transpose(arr, (1, 2, 0))  # H,W,C
+                    npy_path = save_path_full.with_suffix(".npy")
+                    print(f"Saving watermarked image to {npy_path}")
+                    np.save(npy_path, arr)
+                else:
+                    raise ValueError(f"Unsupported save format: {save_format}. Use 'png' or 'npy'.")
     encoder.train()
     decoder.train()
     
@@ -181,6 +190,8 @@ def main() -> None:
                         help='Run in test mode for single image watermark extraction verification.')
     parser.add_argument('--test_image_filename', type=str, 
                         help='Original Filename (processed not watermarked) of the image to test extraction from (e.g., "001_image.jpg"). Required with --test.')
+    parser.add_argument('--format_image_save', type=str, choices=['png', 'npy'], default='png',
+                        help='Image format to save the watermarked images.')
     parser.add_argument('--device', type=int, default=0)
     args = parser.parse_args()
 
@@ -200,7 +211,9 @@ def main() -> None:
     elif args.bpp == 4: 
         db_name = ""
     elif args.bpp == 6:
-        db_name = ""         
+        db_name = "watermarks_BBP_6_196608_39321.db"
+        if args.set_name == 'templates':
+            db_name = "watermarks_BBP_6_196608_39321_templates.db"      
     elif args.bpp == 8:
         db_name = "watermarks_BBP_8_131072_13107.db"
         if args.set_name == 'templates':
@@ -211,6 +224,8 @@ def main() -> None:
     # Setting parameters and hyperparameters used in training
     if args.bpp == 8:
         bpp = 2
+    if args.bpp == 6:
+        bpp = 3
 
     message_L = 16*bpp
     message_N = 64*64
@@ -263,8 +278,13 @@ def main() -> None:
             print(f"[TEST] for a single image: {args.test_image_filename}")
         else:
             inference_data_path = output_save_dir
-            filenames = [p.name for p in Path(inference_data_path).glob('*')]
-            filenames.sort()
+            if args.format_image_save == 'png':
+                filenames = [p.name for p in Path(inference_data_path).glob('*.png')]
+                filenames.sort()
+            else:
+                filenames = [p.name for p in Path(inference_data_path).glob('*.npy')]
+                filenames.sort()
+            
             if not filenames:
                 print(f"[TEST] Did not find any images in: {inference_data_path}")
                 return
@@ -280,20 +300,36 @@ def main() -> None:
                 # 1. Get the true watermark message from the database
                 # remember watermaked images are stored as png but the db uses jpg or original extension
                 if args.dataset != 'ONOT':
-                    true_message = get_watermark_from_db(watermark_db_path, fname.replace('png','jpg'))
+                    if args.format_image_save == 'png':
+                        true_message = get_watermark_from_db(watermark_db_path, fname.replace('png','jpg'))
+                    else:
+                        true_message = get_watermark_from_db(watermark_db_path, fname.replace('npy','jpg'))
                 else:
-                    true_message = get_watermark_from_db(watermark_db_path, fname)
+                    if args.format_image_save == 'png':
+                        true_message = get_watermark_from_db(watermark_db_path, fname)
+                    else:
+                        true_message = get_watermark_from_db(watermark_db_path, fname.replace('npy','png'))
                 
                 if true_message is None:
                     print(f"Could not retrieve true watermark for {fname}. Skipping.")
                     continue
             
                 # 2. Read the watermarked image
-                wm_path = (output_save_dir / fname).with_suffix(".png")
-                if args.dataset != 'ONOT':
-                    img_path = Path(inference_test_path) / fname.replace('png','jpg') # original image path
+                if args.format_image_save == 'png':
+                    wm_path = (output_save_dir / fname).with_suffix(".png")
                 else:
-                    img_path = Path(inference_test_path) / fname # original image path
+                    wm_path = (output_save_dir / fname).with_suffix(".npy")
+
+                if args.dataset != 'ONOT':
+                    if args.format_image_save == 'png':
+                        img_path = Path(inference_test_path) / fname.replace('png','jpg') # original image path
+                    else:
+                        img_path = Path(inference_test_path) / fname.replace('npy','jpg') # original image path
+                else:
+                    if args.format_image_save == 'png':
+                        img_path = Path(inference_test_path) / fname # original image path
+                    else:
+                        img_path = Path(inference_test_path) / fname.replace('npy','png') # original image path
 
                 if not img_path.exists():
                     print(f"[SKIP] Does not exist: {fname} in: {img_path}")
@@ -304,7 +340,7 @@ def main() -> None:
                     continue
 
                 # 3) Load and preprocess the watermarked image for the decoder
-                watermarked_image_tensor = load_and_preprocess_image(wm_path, im_size, img_norm=False, device_id=device_id)
+                watermarked_image_tensor = load_and_preprocess_image(wm_path, im_size, img_norm=False, device_id=device_id, image_format=args.format_image_save)
                 image = load_and_preprocess_image(img_path, im_size, img_norm=False, device_id=device_id)
                 # print("min/max into decoder:", watermarked_image_tensor.amin().item(), watermarked_image_tensor.amax().item())
 
@@ -365,24 +401,25 @@ def main() -> None:
             print(f"SSIM STD: {ssim_offine_std:.4f}")
             print("---------------------------------------------------")
 
-            # open the results_summary.json file and strore this results there
-            results_filepath = base_path / "results_summary.json"
-            if results_filepath.exists():
-                with open(results_filepath, "r") as f:
-                    results_data = json.load(f)
+            if args.format_image_save == 'png':
+                # open the results_summary.json file and strore this results there
+                results_filepath = base_path / "results_summary.json"
+                if results_filepath.exists():
+                    with open(results_filepath, "r") as f:
+                        results_data = json.load(f)
+                        
+                    results_data["accuracy_offline"] = acc_offline_mean.item()
+                    results_data["accuracy_offline_std"] = acc_offline_mean.item()
+                    results_data["psnr_offline"] = psnr_offine_mean.item()
+                    results_data["psnr_offline_std"] = psnr_offine_std.item()
+                    results_data["ssim_offline"] = ssim_offine_mean.item()
+                    results_data["ssim_offline_std"] = ssim_offine_std.item()
                     
-                results_data["accuracy_offline"] = acc_offline_mean.item()
-                results_data["accuracy_offline_std"] = acc_offline_mean.item()
-                results_data["psnr_offline"] = psnr_offine_mean.item()
-                results_data["psnr_offline_std"] = psnr_offine_std.item()
-                results_data["ssim_offline"] = ssim_offine_mean.item()
-                results_data["ssim_offline_std"] = ssim_offine_std.item()
-                
-                with open(results_filepath, "w") as f:
-                    json.dump(results_data, f, indent=2)
-                print(f"Results updated in: {results_filepath}")
-            else:
-                print(f"Results file not found, skipping update: {results_filepath}")
+                    with open(results_filepath, "w") as f:
+                        json.dump(results_data, f, indent=2)
+                    print(f"Results updated in: {results_filepath}")
+                else:
+                    print(f"Results file not found, skipping update: {results_filepath}")
         return # Exit main 
     
     # --- END LOGIC FOR TEST MODE ---
@@ -399,7 +436,7 @@ def main() -> None:
         test_dataloader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=8, pin_memory=True)
         test_message_acc, test_psnr, test_ssim, test_message_acc_std, test_psnr_std, test_ssim_std = inference(test_dataloader, encoder, decoder, message_N, 
                                                                                                                device_id, msg_range, output_save_dir=output_save_dir, 
-                                                                                                               cal_psnr=cal_psnr, cal_ssim=cal_ssim)
+                                                                                                               cal_psnr=cal_psnr, cal_ssim=cal_ssim, save_format=args.format_image_save)
 
         print(f"\n--- Inference results ---")
         print(f"Accuracy: {test_message_acc:.4f}")
@@ -410,7 +447,7 @@ def main() -> None:
         print(f"SSIM STD: {test_ssim_std:.4f}")
         print("-------------------------")
 
-        if args.set_name == 'test':
+        if args.set_name == 'test' and args.format_image_save == 'png':
             # Store the results in a JSON file 
             results_data = {
                 "timestamp": datetime.now().isoformat(),
