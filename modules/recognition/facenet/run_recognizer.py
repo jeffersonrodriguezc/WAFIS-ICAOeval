@@ -117,7 +117,7 @@ def calculate_metrics(genuine_distances, impostor_distances, num_thresholds=None
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Face recognition using FaceNet")
-    parser.add_argument('--dataset', type=str, choices=['facelab_london', 'CFD', 'ONOT', 'LFW'], default='CFD')
+    parser.add_argument('--dataset', type=str, choices=['facelab_london', 'CFD', 'ONOT', 'LFW', 'SCface', 'ONOT_set1'], default='CFD')
     parser.add_argument('--train_dataset', type=str, choices=['celeba_hq', 'coco'], default='celeba_hq')
     parser.add_argument('--watermarking_model', type=str, default='stegaformer')
     parser.add_argument('--experiment_name', type=str, default='1_1_255_w16_learn_im')
@@ -176,7 +176,7 @@ def main() -> None:
         image_paths = list(test_path.glob(f'**/*{ext}'))
         template_paths = list(templates_path.glob(f'**/*{ext}'))
 
-    elif args.dataset == 'ONOT':
+    elif args.dataset == 'ONOT' or args.dataset == 'ONOT_set1':
         ext = '.png'
         image_paths = list(test_path.glob(f'**/*{ext}'))
         template_paths = list(templates_path.glob(f'**/*{ext}'))
@@ -185,6 +185,11 @@ def main() -> None:
         ext = '.jpg'
         image_paths = list(test_path.glob(f'**/*{ext}'))
         template_paths = list(templates_path.glob(f'**/*{ext}'))
+    elif args.dataset == 'SCface':
+        ext = '.JPG'
+        template_paths = list(templates_path.glob(f'**/*{ext}'))
+        ext = '.jpg'
+        image_paths = list(test_path.glob(f'**/*{ext}'))
     else:
         raise ValueError(f"Unsupported dataset: {args.dataset}")
     
@@ -319,8 +324,8 @@ def main() -> None:
         print(f"Std deviation of variation in genuine distances due to watermarking: {std_variation_genuine}")
 
     if impostor_variation_distances:
-        mean_variation_impostor = np.round(np.mean(impostor_variation_distances),3)     
-        std_variation_impostor = np.round(np.std(impostor_variation_distances),3)
+        mean_variation_impostor = np.round(np.mean(impostor_variation_distances)*100,3)     
+        std_variation_impostor = np.round(np.std(impostor_variation_distances)*100,3)
         print(f"Mean variation in impostor distances due to watermarking: {mean_variation_impostor}")
         print(f"Std deviation of variation in impostor distances due to watermarking: {std_variation_impostor}")
 
@@ -332,8 +337,8 @@ def main() -> None:
         print(f"Std deviation of variation in genuine distances due to watermarking process on both: {std_variation_genuine_template}")
 
     if impostor_variation_distances_template:
-        mean_variation_impostor_template = np.round(np.mean(impostor_variation_distances_template),3)     
-        std_variation_impostor_template = np.round(np.std(impostor_variation_distances_template),3)
+        mean_variation_impostor_template = np.round(np.mean(impostor_variation_distances_template)*100,3)     
+        std_variation_impostor_template = np.round(np.std(impostor_variation_distances_template)*100,3)
         print(f"Mean variation in impostor distances due to watermarking process on both: {mean_variation_impostor_template}")
         print(f"Std deviation of variation in impostor distances due to watermarking process on both: {std_variation_impostor_template}")
 
@@ -426,7 +431,9 @@ def main() -> None:
         f'facenet_avg_raw_dist_{args.metric}_genuine_raw_vs_watermark': avg_genuine_raw_distance if genuine_raw_distances else None,
         f'facenet_avg_raw_dist_{args.metric}_impostor_raw_vs_watermark': avg_impostor_raw_distance if impostor_raw_distances else None,
         f'facenet_avg_raw_dist_{args.metric}_genuine_raw_vs_watermark_template': avg_genuine_raw_distance_template if genuine_raw_distances_template else None,
-        f'facenet_avg_raw_dist_{args.metric}_impostor_raw_vs_watermark_template': avg_impostor_raw_distance_template if impostor_raw_distances_template else None
+        f'facenet_avg_raw_dist_{args.metric}_impostor_raw_vs_watermark_template': avg_impostor_raw_distance_template if impostor_raw_distances_template else None,
+        f'facenet_avg_var_dist_{args.metric}_genuine_due_watermark_both': mean_variation_genuine_template if genuine_variation_distances_template else None,
+        f'facenet_avg_var_dist_{args.metric}_impostor_due_watermark_both': mean_variation_impostor_template if impostor_variation_distances_template else None
     }
 
     # Add the std of distances to the results data
@@ -436,7 +443,9 @@ def main() -> None:
         f'facenet_std_raw_dist_{args.metric}_genuine_raw_vs_watermark': std_genuine_raw_distance if genuine_raw_distances else None,
         f'facenet_std_raw_dist_{args.metric}_impostor_raw_vs_watermark': std_impostor_raw_distance if impostor_raw_distances else None,
         f'facenet_std_raw_dist_{args.metric}_genuine_raw_vs_watermark_template': std_genuine_raw_distance_template if genuine_raw_distances_template else None,
-        f'facenet_std_raw_dist_{args.metric}_impostor_raw_vs_watermark_template': std_impostor_raw_distance_template if impostor_raw_distances_template else None
+        f'facenet_std_raw_dist_{args.metric}_impostor_raw_vs_watermark_template': std_impostor_raw_distance_template if impostor_raw_distances_template else None,
+        f'facenet_std_var_dist_{args.metric}_genuine_due_watermark_both': std_variation_genuine_template if genuine_variation_distances_template else None,
+        f'facenet_std_var_dist_{args.metric}_impostor_due_watermark_both': std_variation_impostor_template if impostor_variation_distances_template else None
     }
 
     # Add the recognition metrics to the results data

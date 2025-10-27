@@ -172,7 +172,7 @@ def inference(inference_loader, encoder, decoder, message_N, device_id, msg_rang
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Embed watermark messages into images")
-    parser.add_argument('--dataset', type=str, choices=['facelab_london', 'CFD', 'ONOT', 'LFW'], default='facelab_london')
+    parser.add_argument('--dataset', type=str, choices=['facelab_london', 'CFD', 'ONOT', 'LFW', 'ONOT_set1', 'SCface'], default='facelab_london')
     parser.add_argument('--exp_name', type=str, default='1_1_255_w16_learn_im')
     parser.add_argument('--train_dataset', type=str, default='celeba_hq',
                         help='Name of the training dataset used for the model')                   
@@ -226,6 +226,8 @@ def main() -> None:
         bpp = 2
     if args.bpp == 6:
         bpp = 3
+    if args.bpp in [1,2,3]:
+        bpp = args.bpp
 
     message_L = 16*bpp
     message_N = 64*64
@@ -299,7 +301,7 @@ def main() -> None:
             for fname in filenames:
                 # 1. Get the true watermark message from the database
                 # remember watermaked images are stored as png but the db uses jpg or original extension
-                if args.dataset != 'ONOT':
+                if args.dataset.split('_')[0] != 'ONOT' :
                     if args.format_image_save == 'png':
                         true_message = get_watermark_from_db(watermark_db_path, fname.replace('png','jpg'))
                     else:
@@ -320,7 +322,7 @@ def main() -> None:
                 else:
                     wm_path = (output_save_dir / fname).with_suffix(".npy")
 
-                if args.dataset != 'ONOT':
+                if args.dataset.split('_')[0] != 'ONOT':
                     if args.format_image_save == 'png':
                         img_path = Path(inference_test_path) / fname.replace('png','jpg') # original image path
                     else:

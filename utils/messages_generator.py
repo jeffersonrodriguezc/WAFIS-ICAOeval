@@ -98,14 +98,16 @@ def main(
 
     # Define the shape and length of the watermark based on message_n and message_l
     #BBP = bbp # Assuming message_l=16 y image_size=256x256 -> 16*4096 / (256*256) = 1
-    
-    if bbp == 8:
+    if bbp == 1:
+        BBP = 1
+    elif bbp == 3:
+        BBP = 3
+    elif bbp == 8:
         BBP = 2
-
     elif bbp == 6:
         BBP = 3
     else:
-        BBP = bbp.copy()
+        raise ValueError(f"Unsupported bbp value: {bbp}. Supported values are 1, 3, 6, 8.")
     
     WATERMARK_LENGTH = message_n * (message_l*BBP) # 65536, bbp=1
     print(f"Generating watermarks of length {WATERMARK_LENGTH} for each user in the dataset.")
@@ -137,9 +139,11 @@ def main(
         image_files = glob.glob(os.path.join(test_data_path, '*.jpg'))
     elif dataset_name == 'CFD':
         image_files = glob.glob(os.path.join(test_data_path, '*.jpg'))
-    elif dataset_name == 'ONOT':
+    elif dataset_name == 'ONOT' or dataset_name == 'ONOT_set1':
         image_files = glob.glob(os.path.join(test_data_path, '*.png'))
     elif dataset_name == 'LFW':
+        image_files = glob.glob(os.path.join(test_data_path, '*.jpg'))
+    elif dataset_name == 'SCface':
         image_files = glob.glob(os.path.join(test_data_path, '*.jpg'))
     
     if not image_files:

@@ -277,17 +277,21 @@ class MIMData_inference(Dataset):
         self.msg_range = msg_r
         self.image_norm = img_norm
 
-        assert dataset in ['facelab_london', 'CFD', 'ONOT', 'LFW'], "Invalid DataSet. only support ['facelab_london', 'CFD', 'ONOT', 'LFW']."
+        assert dataset in ['facelab_london', 'CFD', 'ONOT', 'LFW', 'SCface', 'ONOT_set1'], "Invalid DataSet. only support ['facelab_london', 'CFD', 'ONOT', 'LFW', 'SCface', 'ONOT_set1']."
         assert roi in ['fit', 'crop'], "Invalid Roi Selection. only support ['fit', 'crop']."
 
         if dataset == 'facelab_london':
             self.files_list = glob(os.path.join(self.data_path, '*.jpg'))
         elif dataset == 'CFD':
             self.files_list = glob(os.path.join(self.data_path, '*.jpg'))
-        elif dataset == 'ONOT':
+        elif dataset == 'ONOT' or dataset == 'ONOT_set1':
             self.files_list = glob(os.path.join(self.data_path, '*.png'))
         elif dataset == 'LFW':
             self.files_list = glob(os.path.join(self.data_path, '*.jpg'))
+        elif dataset == 'SCface':
+            self.files_list = glob(os.path.join(self.data_path, '*.jpg'))
+            if not self.files_list:
+                self.files_list = glob(os.path.join(self.data_path, '*.JPG'))
 
         if not self.files_list:
             raise RuntimeError(f"No image files found in {self.data_path} for dataset {dataset} with specified extension.")
