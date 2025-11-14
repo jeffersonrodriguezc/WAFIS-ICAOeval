@@ -1,189 +1,188 @@
-import os 
-import argparse 
+import os
+import argparse
+import numpy as np
 import matplotlib.pyplot as plt
-import numpy as np 
 from PIL import Image, ImageOps
+from matplotlib.colors import TwoSlopeNorm
 
-def visualize_watermark_difference(
+def compute_bpp(model_name: str, exp_name: str) -> int:
+    """Función auxiliar para determinar bpp basado en el nombre del modelo."""
+    splits = exp_name.split('_')
+    if model_name.lower() == 'stegaformer':
+        if splits[0] == '1' and splits[1] == '1':
+            bpp = 1
+        elif splits[0] == '1' and splits[1] == '3':
+            bpp = 3
+        elif splits[0] == '3' and splits[1] == '3':
+            bpp = 6
+        elif splits[0] == '15' and splits[1] == '2':
+            bpp = 8
+        else:
+            raise ValueError(f'Unknown experiment name format: {exp_name}')
+    elif model_name.lower() == 'stegformer':
+        if splits[0] == '1' and splits[1] == '1':
+            bpp = 1
+        elif splits[0] == '3' and splits[1] == '3':
+            bpp = 3
+        elif splits[0] == '3' and splits[1] == '6':
+            bpp = 6
+        elif splits[0] == '2' and splits[1] == '8':
+            bpp = 8
+        else:
+            raise ValueError(f'Unknown experiment name format: {exp_name}')
+    else:
+        raise ValueError(f'Unknown model name: {model_name}')
+    return bpp
+
+def visualize_watermark_divergence(
     exp_name: str,
     dataset: str,
     train_dataset: str,
     model_name: str,
     num_images_to_visualize: int,
-    output_viz_dir: str
+    normalize: bool = False,
+    recognizer: str = 'facenet',
 ) -> None:
     """
-    Generates visualizations of the difference between original and watermarked images.
-
-    This function loads original and watermarked images, calculates their absolute
-    difference (residual), and displays them side-by-side. The residual image
-    highlights the areas where the watermark has introduced changes.
+    Visualiza la dirección y magnitud del cambio introducido por el watermark
+    para cada canal RGB, junto con el mapa de magnitud total.
 
     Args:
-        exp_name (str): The name of the experiment. This is used to construct the
-                        path to the watermarked images and results.
-        dataset (str): The name of the dataset. This is used to construct the
-                       paths to both original and watermarked images.
-        train_dataset (str): The name of the dataset used for training. This is part of the path
-                             to the watermarked images.
-        model_name (str): The name of the model used for watermarking. This is part of the path
-                         to the watermarked images.
-        num_images_to_visualize (int): The number of image pairs (original and watermarked)
-                                       to process and visualize.
-        output_viz_dir (str): The directory path where the generated visualization
-                              images will be saved.
+        exp_name (str): Nombre del experimento.
+        dataset (str): Dataset de prueba.
+        train_dataset (str): Dataset usado para entrenamiento.
+        model_name (str): Modelo de watermarking.
+        num_images_to_visualize (int): Número de imágenes a visualizar.
+        normalize (bool): Si True, usa rangos dinámicos basados en los valores reales;
+                          si False, mantiene rangos fijos [-255,255] y [0,765].
     """
-    # Construct base paths for input and output directories based on conventions.
-    # The 'base_output_dir' is where watermarked images and results are expected to be.
+    bpp = compute_bpp(model_name, exp_name)
+    output_viz_dir = f'../evaluation/visualizations/{model_name}/differences/{train_dataset}/{dataset}/{recognizer}/{bpp}'
     base_output_dir = f'../experiments/output/watermarking/{model_name}/{exp_name}/inference/{train_dataset}/{dataset}'
-  
-    # The 'original_images_dir' points to the location of the clean, original images.
     original_images_dir = f'../datasets/{dataset}/processed/test'
-    # The 'watermarked_images_dir' points to the directory containing the images
-    # after the watermark has been embedded.
     watermarked_images_dir = f'{base_output_dir}/watermarked_images'
-
-    # Create the output directory for visualizations if it does not already exist.
-    # 'exist_ok=True' prevents an error if the directory already exists.
-    output_viz_dir = os.path.join(output_viz_dir, f'{model_name}', 'differences', f'{exp_name}_{train_dataset}_{dataset}')
     os.makedirs(output_viz_dir, exist_ok=True)
 
-    # Get a sorted list of image files from the watermarked images directory.
-    # It filters for common image file extensions. Sorting ensures consistent processing order.
-    
-    if args.dataset == 'ONOT':
+    # Obtener lista de archivos
+    if dataset in ['ONOT', 'ONOT_set1']:
         image_files = sorted([f for f in os.listdir(original_images_dir) if f.endswith(('.png', '.PNG'))])
     else:
         image_files = sorted([f for f in os.listdir(original_images_dir) if f.endswith(('.jpg', '.jpeg'))])
 
-    # Check if any image files were found. If not, print a message and exit the function.
     if not image_files:
-        print(f"No images found in {original_images_dir}")
+        print(f"No se encontraron imágenes en {original_images_dir}")
         return
 
-    # Loop through a subset of the found image files up to 'num_images_to_visualize'.
     for i, filename in enumerate(image_files[:num_images_to_visualize]):
         try:
-            # Construct full paths for the current original and watermarked images.
-            original_img_path = os.path.join(original_images_dir, filename)
             ext = filename.split('.')[-1]
-            if args.dataset == 'ONOT':
-                # ONOT uses png images in test set
+            original_img_path = os.path.join(original_images_dir, filename)
+            if dataset in ['ONOT', 'ONOT_set1']:
                 watermarked_img_path = os.path.join(watermarked_images_dir, filename)
             else:
                 watermarked_img_path = os.path.join(watermarked_images_dir, filename.replace(ext, 'png'))
 
-            # Open the images using Pillow and convert them to RGB format.
-            # Converting to RGB ensures consistent channel structure for calculations.
+            # Abrir imágenes
             original_img = Image.open(original_img_path).convert('RGB')
             original_img = ImageOps.fit(original_img, (256, 256))
             watermarked_img = Image.open(watermarked_img_path).convert('RGB')
-            
-            # Convert PIL Image objects to NumPy arrays.
-            # This allows for efficient pixel-wise mathematical operations.
-            original_np = np.array(original_img)
-            watermarked_np = np.array(watermarked_img)
-            #print('max original:', original_np.max(), 'min:', original_np.min())
-            #print('max watermarked:', watermarked_np.max(), 'min:', watermarked_np.min())
+            #watermarked_img = ImageOps.fit(watermarked_img, (256, 256))
 
-            # Calculate the residual image by taking the absolute difference
-            # between the original and watermarked image arrays.
-            # This highlights where pixel values have changed due to watermarking.
-            residual_np = np.abs(original_np.astype(float) - watermarked_np.astype(float))
+            orig_np = np.array(original_img).astype(float)
+            wm_np = np.array(watermarked_img).astype(float)
 
-            # Normalize the residual image for better visual representation.
-            # This scales pixel values to a 0-1 range, making differences more apparent.
-            if residual_np.max() > residual_np.min(): # Avoid division by zero if all values are identical
-                residual_normalized = (residual_np - residual_np.min()) / (residual_np.max() - residual_np.min())
+            # Diferencia firmada
+            diff = wm_np - orig_np  # signed difference
+            abs_diff = np.abs(diff)
+            mag = np.sum(abs_diff, axis=-1)
+
+            # Calcular límites para cada canal
+            channel_names = ['Red Channel (Change & Direction)', 'Green Channel (Change & Direction)', 'Blue Channel (Change & Direction)']
+            cmaps = ['bwr', 'PiYG', 'bwr_r']
+            channel_diffs = [diff[..., 0], diff[..., 1], diff[..., 2]]
+
+            # Preparar figura 2x3
+            fig, axes = plt.subplots(2, 3, figsize=(18, 15))
+            fig.suptitle(f'BPP: {bpp} | Dataset training/testing: {train_dataset}/{dataset} | Model: {model_name}', fontsize=14)
+
+            # -------- Fila superior --------
+            # Original
+            axes[0, 0].imshow(original_img)
+            axes[0, 0].set_title('Original Image', fontsize=15)
+            axes[0, 0].axis('off')
+
+            # Watermarked
+            axes[0, 1].imshow(watermarked_img)
+            axes[0, 1].set_title('Watermarked Image', fontsize=15)
+            axes[0, 1].axis('off')
+
+            # Magnitud total
+            if normalize:
+                max_mag = mag.max() if mag.max() > 0 else 1
+                mag_display = mag / max_mag
+                label_mag = f'Magnitude (max={max_mag:.2f} / scaled to 1)'
             else:
-                residual_normalized = np.zeros_like(residual_np) # If no difference, set to black
+                mag_display = mag / 765.0
+                label_mag = f'Magnitude (max={mag.max():.2f} / range 0–765)'
 
-            magnitude_of_change = np.sum(np.abs(original_np.astype(float) - watermarked_np.astype(float)), axis=-1)
-            # normalize the magnitude of change to a 0-1 range for visualization
-            if magnitude_of_change.max() > magnitude_of_change.min():
-                magnitude_normalized = (magnitude_of_change - magnitude_of_change.min()) / (magnitude_of_change.max() - magnitude_of_change.min())
-            else:
-                magnitude_normalized = np.zeros_like(magnitude_of_change, dtype=float)
+            im_mag = axes[0, 2].imshow(mag_display, cmap='hot_r', vmin=0, vmax=1)
+            axes[0, 2].set_title('Total Change Magnitude', fontsize=15)
+            axes[0, 2].axis('off')
+
+            # Barra vertical de magnitud
+            cbar_mag = fig.colorbar(im_mag, ax=axes[0, 2], orientation='vertical', fraction=0.046, pad=0.04)
+            cbar_mag.set_label(label_mag, fontsize=14)
+            cbar_mag.ax.tick_params(labelsize=14)
+
+            # -------- Fila inferior: Canales --------
+            for j, (ch_diff, cmap, name) in enumerate(zip(channel_diffs, cmaps, channel_names)):
+                if normalize:
+                    vmin, vmax = ch_diff.min(), ch_diff.max()
+                    norm = TwoSlopeNorm(vmin=vmin, vcenter=0, vmax=vmax)
+                    label = f'{name}\n(min={vmin:.1f}, max={vmax:.1f})'
+                else:
+                    norm = TwoSlopeNorm(vmin=-255, vcenter=0, vmax=255)
+                    label = f'{name}\n(range −255 to +255)'
+
+                im = axes[1, j].imshow(ch_diff, cmap=cmap, norm=norm)
+                axes[1, j].set_title(name, fontsize=15)
+                axes[1, j].axis('off')
+
+                # Barra inferior para cada canal
+                cbar = fig.colorbar(im, ax=axes[1, j], orientation='horizontal', fraction=0.046, pad=0.08)
+                cbar.set_label(label, fontsize=14)
+                cbar.ax.tick_params(labelsize=14)
 
 
-            # Create a new Matplotlib figure with a specified size.
-            plt.figure(figsize=(24, 6))
-
-            # Subplot 1: Original Image
-            plt.subplot(1, 4, 1) # 1 row, 4 columns, 1st subplot
-            plt.imshow(original_img) # Display the original image
-            plt.title('Original Image') # Set title
-            plt.axis('off') # Hide axes for cleaner image display
-
-            # Subplot 2: Watermarked Image
-            plt.subplot(1, 4, 2) # 1 row, 4 columns, 2nd subplot
-            plt.imshow(watermarked_img) # Display the watermarked image
-            plt.title('Watermarked Image') # Set title
-            plt.axis('off') # Hide axes
-
-            # Subplot 3: Residual (Difference) Image
-            plt.subplot(1, 4, 3) # 1 row, 4 columns, 3rd subplot
-            plt.imshow(residual_normalized) # Display the normalized residual image
-            plt.title('Residual (Difference)') # Set title
-            plt.axis('off') # Hide axes
-
-            # Subplot 4: Heatmap of Change Magnitude 
-            plt.subplot(1, 4, 4) # 1 row, 4 columns, 4th subplot
-            plt.imshow(magnitude_normalized, cmap='Reds') # 'hot' o 'Reds'
-            #plt.colorbar(label='Magnitude of Change (Normalized)', orientation='horizontal') 
-            plt.title('Heatmap of Change Magnitude')
-            plt.axis('off')
-
-            # Set a super title for the entire figure, including experiment and dataset details.
-            plt.suptitle(f'Experiment: {exp_name}, Dataset: {dataset}, Model: {model_name}', fontsize=16)
-
-            # Construct the full path to save the generated comparison image.
-            save_path = os.path.join(output_viz_dir, f'comparison_{i+1}_{filename}')
-            # Save the figure to the specified path. 'bbox_inches='tight'' ensures no extra whitespace.
+            plt.tight_layout(rect=[0, 0, 1, 0.95])
+            save_path = os.path.join(output_viz_dir, f'divergence_{i+1}_{filename}.png')
             plt.savefig(save_path, bbox_inches='tight')
-            plt.close() # Close the figure to free up memory.
-            print(f"Comparison saved for {filename} to {save_path}")
+            plt.close(fig)
+            print(f"✅ Saved divergence visualization for {filename} -> {save_path}")
 
         except FileNotFoundError as fnfe:
-            # Handle cases where an expected image file is not found.
-            print(f"File not found for visualization: {fnfe}")
+            print(f"❌ File not found: {fnfe}")
         except Exception as e:
-            # Catch any other unexpected errors during image processing.
-            print(f"Error processing {filename}: {e}")
+            print(f"⚠️ Error processing {filename}: {e}")
 
-# This block ensures that the code inside it only runs when the script is executed directly,
-# not when it's imported as a module.
 if __name__ == '__main__':
-    # Initialize the ArgumentParser to handle command-line arguments.
-    parser = argparse.ArgumentParser(description="Generate watermark difference visualizations.")
+    parser = argparse.ArgumentParser(description="Visualize per-channel divergence and total change in watermarked images.")
+    parser.add_argument('--exp_name', type=str, default='1_3_255_w16_learn_im', help='Experiment name')
+    parser.add_argument('--dataset', type=str, default='CFD', choices=['facelab_london', 'CFD', 'ONOT', 'ONOT_set1', 'LFW', 'SCface'])
+    parser.add_argument('--train_dataset', type=str, default='celeba_hq', choices=['celeba_hq', 'coco'])
+    parser.add_argument('--model_name', type=str, default='stegaformer', help='Model name')
+    parser.add_argument('--num_images', type=int, default=5, help='Number of images to visualize')
+    parser.add_argument('--normalize', action='store_true', help='Enable normalization per image and channel')
+    parser.add_argument('--recognizer', type=str, default='facenet', help='Face recognizer used (not used in this script)')
     
-    # Define command-line arguments with their types, default values, and help messages.
-    parser.add_argument('--exp_name', type=str, default='1_2_255_w16_learn_im',
-                        help='Name of the experiment to visualize.')
-    parser.add_argument('--dataset', type=str, default='facelab_london',
-                        choices=['facelab_london', 'CFD', 'ONOT', 'LFW'],
-                        help='Dataset name.')
-    parser.add_argument('--train_dataset', type=str, default='celeba_hq',
-                        choices=['celeba_hq', 'coco'],
-                        help='Dataset used for training.')
-    parser.add_argument('--model_name', type=str, default='stegaformer',
-                        help='Name of the model used for watermarking.')
-    parser.add_argument('--num_images', type=int, default=5,
-                        help='Number of images to visualize.')
-    parser.add_argument('--output_dir', type=str, default='../evaluation/visualizations',
-                        help='Directory to save the visualizations.')
-    
-    # Parse the arguments provided by the user.
     args = parser.parse_args()
-
-    # Call the main visualization function with the parsed arguments.
-    visualize_watermark_difference(
+    visualize_watermark_divergence(
         exp_name=args.exp_name,
         dataset=args.dataset,
         train_dataset=args.train_dataset,
         model_name=args.model_name,
         num_images_to_visualize=args.num_images,
-        output_viz_dir=args.output_dir
+        normalize=args.normalize,
+        recognizer=args.recognizer
     )
 
-#python .\visualize_watermark_difference.py --exp_name 1_1_255_w16_learn_im --dataset CFD
