@@ -4,6 +4,74 @@ import torch.utils.checkpoint as checkpoint
 from timm.models.layers import DropPath, to_2tuple, trunc_normal_
 from einops import rearrange
 
+# Models
+# -------------------------
+def build_models(args, build = 'both'):
+    # Mirror train.py variants
+    if args.use_model == 'StegFormer-S':
+        print("Using StegFormer-S model with custom depth and parameters")
+        if build == 'encoder':
+            encoder = StegFormer(img_resolution=args.image_size, 
+                            input_dim=(3 + args.secret_channels), cnn_emb_dim=8, output_dim=3,
+                            drop_key=False, patch_size=2, window_size=8, output_act=args.output_act, depth=[1, 1, 1, 1, 2, 1, 1, 1, 1], depth_tr=[2, 2, 2, 2, 2, 2, 2, 2])
+            
+            return encoder
+        
+        elif build == 'decoder':
+            decoder = StegFormer(img_resolution=args.image_size, 
+                            input_dim=3, cnn_emb_dim=8, output_dim=args.secret_channels,
+                            drop_key=False, patch_size=2, window_size=8, output_act=args.output_act, depth=[1, 1, 1, 1, 2, 1, 1, 1, 1], depth_tr=[2, 2, 2, 2, 2, 2, 2, 2])
+            return decoder
+        
+        elif build == 'both':
+            encoder = StegFormer(img_resolution=args.image_size, 
+                            input_dim=(3 + args.secret_channels), cnn_emb_dim=8, output_dim=3,
+                            drop_key=False, patch_size=2, window_size=8, output_act=args.output_act, depth=[1, 1, 1, 1, 2, 1, 1, 1, 1], depth_tr=[2, 2, 2, 2, 2, 2, 2, 2])
+        
+            decoder = StegFormer(img_resolution=args.image_size, 
+                            input_dim=3, cnn_emb_dim=8, output_dim=args.secret_channels,
+                            drop_key=False, patch_size=2, window_size=8, output_act=args.output_act, depth=[1, 1, 1, 1, 2, 1, 1, 1, 1], depth_tr=[2, 2, 2, 2, 2, 2, 2, 2])
+
+            return encoder, decoder
+        
+    elif args.use_model == 'StegFormer-B':
+        print("Using StegFormer-B model with default parameters")
+        if build == 'encoder':
+            encoder = StegFormer(img_resolution=args.image_size, 
+                            input_dim=(3 + args.secret_channels), cnn_emb_dim=16, output_dim=3)
+            return encoder
+
+        elif build == 'decoder':
+            decoder = StegFormer(img_resolution=args.image_size, input_dim=3, cnn_emb_dim=16, output_dim=args.secret_channels)
+
+            return decoder
+        
+        elif build == 'both':
+            encoder = StegFormer(img_resolution=args.image_size, 
+                            input_dim=(3 + args.secret_channels), cnn_emb_dim=16, output_dim=3)
+            decoder = StegFormer(img_resolution=args.image_size, input_dim=3, cnn_emb_dim=16, output_dim=args.secret_channels)
+
+            return encoder, decoder
+
+    elif args.use_model == 'StegFormer-L':
+        print("Using StegFormer-L model with larger parameters")
+        if build == 'encoder':
+            encoder = StegFormer(img_resolution=args.image_size, 
+                            input_dim=(3 + args.secret_channels), cnn_emb_dim=32, output_dim=3, depth=[2, 2, 2, 2, 2, 2, 2, 2, 2])
+            return encoder
+        
+        elif build == 'decoder':
+            decoder = StegFormer(img_resolution=args.image_size, input_dim=3, cnn_emb_dim=32, output_dim=args.secret_channels, depth=[2, 2, 2, 2, 2, 2, 2, 2, 2])
+            return decoder
+        
+        elif build == 'both':
+            encoder = StegFormer(img_resolution=args.image_size, 
+                            input_dim=(3 + args.secret_channels), cnn_emb_dim=32, output_dim=3, depth=[2, 2, 2, 2, 2, 2, 2, 2, 2])   
+            decoder = StegFormer(img_resolution=args.image_size, input_dim=3, cnn_emb_dim=32, output_dim=args.secret_channels, depth=[2, 2, 2, 2, 2, 2, 2, 2, 2])
+            return encoder, decoder         
+    
+    else:
+        raise ValueError(f"Unknown use_model: {args.use_model}")
 
 class Mlp(nn.Module):
     """

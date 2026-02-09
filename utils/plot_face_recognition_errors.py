@@ -262,6 +262,9 @@ def process_condition_flips(model_name, df_flips, exp_name, train_dataset, datas
     for idx, row in enumerate(selected_rows, start=1):
         id_a = str(row["id_a"])
         id_b = str(row["id_b"])
+        if dataset == 'SCface':
+            id_a = str(id_a).zfill(3)
+            id_b = str(id_b).zfill(3)
 
         if dataset in ["ONOT", "ONOT_set1"]:
             tmpl_path = os.path.join(original_templates_dir, f"{id_a}.png")
@@ -270,7 +273,11 @@ def process_condition_flips(model_name, df_flips, exp_name, train_dataset, datas
             tmpl_wm_path = os.path.join(watermarked_templates_dir, f"{id_a}.png")
             probe_wm_path = os.path.join(watermarked_images_dir, f"{img_filename.replace('.jpg', '.png')}")
         else:
-            tmpl_path = os.path.join(original_templates_dir, f"{id_a}.jpg")
+            if dataset == 'SCface':
+                tmpl_path = os.path.join(original_templates_dir, f"{id_a}.JPG")
+            else:
+                tmpl_path = os.path.join(original_templates_dir, f"{id_a}.jpg")
+                
             img_filename = [img_name for img_name in os.listdir(original_images_dir) if img_name.startswith(id_b)][0]
             probe_orig_path = os.path.join(original_images_dir, f"{img_filename.replace('.png', '.jpg')}")
             tmpl_wm_path = os.path.join(watermarked_templates_dir, f"{id_a}.png")

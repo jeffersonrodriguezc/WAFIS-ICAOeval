@@ -6,6 +6,33 @@ from pathlib import Path
 from PIL import Image, ImageOps
 import numpy as np
 import torchvision.transforms as transforms
+from torchvision.io import read_image
+    
+def compute_wm_legth(bpp: int, image_size: int) -> int:
+    """
+    Computes the watermark length based on bits per pixel (bpp) and image size.
+
+    Args:
+        bpp (int): Bits per pixel used for watermarking.
+        image_size (int): Size of the image (assuming square images).
+
+    Returns:
+        int: The computed watermark length.
+    """
+    if bpp == 1:
+        return image_size * image_size * bpp
+    elif bpp == 2:
+        return image_size * image_size * bpp
+    elif bpp == 3:
+        return image_size * image_size * bpp
+    elif bpp == 4:
+        return image_size * image_size * 1
+    elif bpp == 6:
+        return image_size * image_size * 3
+    elif bpp == 8:
+        return image_size * image_size * 2
+    else:
+        raise ValueError(f"Unsupported bpp: {bpp}")
 
 def ssim(img1, img2, cal_ssim):
     s = cal_ssim(img1, img2)
@@ -44,13 +71,13 @@ def get_message_accuracy(
     #print("Deco msg min/max:", deco_msg.min().item(), deco_msg.max().item())
     #print("Original msg min/max:", msg.min().item(), msg.max().item())
     # get the original message from the image
+
     msg = reverse_message_image(msg, bpp=bpp)
     deco_msg = reverse_message_image(deco_msg, bpp=bpp)
     
     # Round the tensors to the nearest integer to handle potential floating-point errors
-    original_rounded = torch.round(msg)
-    decoded_rounded = torch.round(deco_msg)
-
+    original_rounded = torch.round(msg).long()
+    decoded_rounded = torch.round(deco_msg).long()
     #print("Original rounded min/max:", original_rounded.min().item(), original_rounded.max().item())
     #print("Decoded rounded min/max:", decoded_rounded.min().item(), decoded_rounded.max().item())
     
@@ -105,6 +132,25 @@ def load_weights(encoder, decoder, save_path, tag='psnr'):
 
     print(f"✅ Loaded weights from {save_path} with tag '{tag}'")
 
+def load_weights_decoder(decoder, save_path, tag='psnr'):
+    dec_path = os.path.join(save_path, f'best_{tag}_decoder.pth.tar')
+    assert os.path.exists(dec_path), \
+        f"Checkpoints not found for tag '{tag}' in {save_path}"
+
+    print(f"🔄 Restoring checkpoint from '{tag.upper()}'...")
+    dec_ckpt = torch.load(dec_path, map_location='cpu')
+    dec_sd = _sanitize_state_dict(dec_ckpt['state_dict'])
+
+    # strict=False para ignorar cualquier resto inocuo
+    missing_d, unexpected_d = decoder.load_state_dict(dec_sd, strict=False)
+
+    if unexpected_d:
+        print("⚠️ Ignored unexpected keys:", unexpected_d)
+    if missing_d:
+        print("⚠️ Missing keys:", missing_d)
+
+    print(f"✅ Loaded weights from {save_path} with tag '{tag}'")
+
 def reverse_message_image(message_image, bpp):
     """
     Reverses the process to extract the original message array from a mapped image.
@@ -132,29 +178,38 @@ def reverse_message_image(message_image, bpp):
     
     x = message_image
 
-    x255 = torch.clamp(x, 0.0, 1.0) * 255.0
-    symbols = torch.round(x255 / mapping_factor).long()
+    #x255 = torch.clamp(x, 0.0, 1.0) * 255.0
+    x255 = x * 255.0
+    symbols = x255 / mapping_factor
     symbols = torch.clamp(symbols, 0, msg_range_high - 1)
 
     return symbols
 
 def load_and_preprocess_image(image_path: Path, 
-                              im_size: int) -> torch.Tensor:
+                              im_size: int, 
+                              image_format: str = 'png') -> torch.Tensor:
     """
-    Loads an image from path and preprocesses it for model input.
-    Args:
-        image_path (Path): Path to the image file.
-        im_size (int): Target size for the image (im_size, im_size).
-        device_id (int): GPU device ID.
-    Returns:
-        torch.Tensor: Preprocessed image tensor.
     """
     # Load and process the cover image
-    img = Image.open(image_path).convert('RGB')
-    img_cover = ImageOps.fit(img, (im_size,im_size))
-    image_tensor = transforms.ToTensor()(img_cover)
+    if image_format == 'png':
+        img = Image.open(image_path).convert('RGB')
+        img_cover = ImageOps.fit(img, (im_size,im_size))
+        image_tensor = transforms.ToTensor()(img_cover)
 
-    return image_tensor
+    elif image_format == 'npy':
+        arr = np.load(image_path)  
+        img_cover = np.transpose(arr, (2, 0, 1))  # H,W,C -> C,H,W 
+        # avoid normalization again (remember that npy are saved in [0,1])
+        image_tensor = torch.from_numpy(img_cover)
+    else:
+        raise ValueError(f"Unsupported image format: {image_format}")
+
+    return image_tensor # Add batch dimension and move to GPU
+
+def load_and_preprocess_image_2(image_path: Path) -> torch.Tensor:
+    img = read_image(str(image_path)).float() / 255.0
+
+    return img
 
 def get_watermark_from_db(db_path: str, filename: str) -> torch.Tensor:
     """
@@ -175,7 +230,11 @@ def get_watermark_from_db(db_path: str, filename: str) -> torch.Tensor:
             # Convert the string to a tensor of floats
             watermark_str = result[0]
             # Ensure it's a list of floats 
-            message_list = [float(bit) for bit in watermark_str]
+            if ',' in watermark_str:
+                message_list = [float(bit) for bit in watermark_str.split(',')]
+            
+            else:   
+                message_list = [float(bit) for bit in watermark_str]
             return np.array(message_list, dtype=np.float32)
         else:
             print(f"Watermark not found for filename: {filename} in {db_path}")

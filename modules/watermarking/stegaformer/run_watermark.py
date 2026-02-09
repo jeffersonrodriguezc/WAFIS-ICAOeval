@@ -411,7 +411,7 @@ def main() -> None:
                         results_data = json.load(f)
                         
                     results_data["accuracy_offline"] = acc_offline_mean.item()
-                    results_data["accuracy_offline_std"] = acc_offline_mean.item()
+                    results_data["accuracy_offline_std"] = acc_offline_std.item()
                     results_data["psnr_offline"] = psnr_offine_mean.item()
                     results_data["psnr_offline_std"] = psnr_offine_std.item()
                     results_data["ssim_offline"] = ssim_offine_mean.item()

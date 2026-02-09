@@ -242,10 +242,13 @@ def main() -> None:
     impostor_variation_distances_template = []
 
     identities = list(templates_embs.keys())
+    genuine_pairs = []
+    impostor_pairs = []
     for i, identity_a in tqdm(enumerate(identities), total=len(identities), desc="Calculating distances"):
         for j, identity_b in enumerate(identities):
             # Genuine pairs (same person)
             if identity_a == identity_b:
+                genuine_pairs.append((identity_a, identity_b))
                 #print(f"Calculating genuine distance for identity: {identity_a}") # original template - original probe
                 dist = face_recognizer_service.get_distance(templates_embs[identity_a][0], tests_embs[identity_b][0], metric=args.metric)
                 # original template - watermarked probe
@@ -275,6 +278,8 @@ def main() -> None:
             # Impostor pairs (different persons)
             elif i < j:
                 if templates_embs[identity_a] and tests_embs[identity_b]:
+                    if args.dataset != 'LFW':
+                        impostor_pairs.append((identity_a, identity_b))
                     #print(f"Calculating impostor distance for identities: {identity_a} and {identity_b}")
                     # original template - original probe
                     dist = face_recognizer_service.get_distance(templates_embs[identity_a][0], tests_embs[identity_b][0], metric=args.metric)
@@ -371,6 +376,10 @@ def main() -> None:
     # Store the distances in csv files
     output_dir = Path(f'output/recognition/{args.watermarking_model}/{args.experiment_name}/{args.train_dataset}/{args.dataset}/facenet/distances')
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    pd.DataFrame(genuine_pairs, columns=['id_a', 'id_b']).to_excel(output_dir / f'{args.dataset}_genuine_pairs.xlsx', index=False)
+    if args.dataset != 'LFW':
+        pd.DataFrame(impostor_pairs, columns=['id_a', 'id_b']).to_excel(output_dir / f'{args.dataset}_impostor_pairs.xlsx', index=False)
     
     print(f"Saving results to {output_dir}...")
     if genuine_distances_baseline:

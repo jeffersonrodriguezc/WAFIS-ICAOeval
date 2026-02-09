@@ -11,9 +11,12 @@ from glob import glob
 import sqlite3
 from torchvision.transforms.functional import to_pil_image
 from utils import load_and_preprocess_image, get_mapping_params, symbols_to_message_image, get_message_accuracy, compute_image_score
+from torchvision.utils import save_image
+from torchvision.io import read_image
+
 
 def inference(inference_loader, encoder, decoder, device, 
-            bpp, norm_train, output_save_dir, cal_psnr, cal_ssim):
+            bpp, norm_train, output_save_dir, cal_psnr, cal_ssim, save_format='png'):
     
     os.makedirs(output_save_dir, exist_ok=True)
     acc_list = []
@@ -24,10 +27,8 @@ def inference(inference_loader, encoder, decoder, device,
         for i, (images, messages, filenames) in tqdm(enumerate(inference_loader), desc="Batches ..."):
             messages = messages.cuda(device)
             images = images.cuda(device)
-
             msg = torch.cat([images, messages], 1)
             encode_img = encoder(msg)
-
             # normalizing
             if norm_train == 'clamp':
                 encode_img_c = torch.clamp(encode_img, 0, 1)
@@ -36,7 +37,6 @@ def inference(inference_loader, encoder, decoder, device,
 
             # decode
             decode_img = decoder(encode_img_c)
-
             # compute psnr, ssim and accuracy
             acc = get_message_accuracy(messages, decode_img, bpp=bpp)
             psnr, ssim = compute_image_score(images, encode_img_c, cal_psnr, cal_ssim)
@@ -49,14 +49,24 @@ def inference(inference_loader, encoder, decoder, device,
             for j in range(encode_img_c.shape[0]):
                 current_filename = filenames[j]
                 save_path_full = output_save_dir / current_filename
-                save_path_full = save_path_full.with_suffix(".png")  # store in PNG
-                #print(f"Saving watermarked image to {save_path_full}")
-                #save_image(enco_images_clamped[j].cpu(), save_path_full, normalize=True, range=(0, 255)) #
-                #pil = to_pil_image(encode_img_c[j].to(torch.uint8))  # C,H,W -> PIL espera C,H,W uint8
-                pil = to_pil_image(encode_img_c[j].detach().cpu()) 
-                #pil = torch.clamp(torch.round(enco_images_clamped[j]), 0, 255).to(torch.uint8)
-                #pil = to_pil_image(pil.cpu())  # C,H,W -> PIL espera C,H,W uint8
-                pil.save(save_path_full, format="PNG", compress_level=0)
+                if save_format == 'png':
+                    save_path_full = save_path_full.with_suffix(".png")  # store in PNG
+                    #print(f"Saving watermarked image to {save_path_full}")
+                    #save_image(enco_images_clamped[j].cpu(), save_path_full, normalize=True, range=(0, 255)) #
+                    #pil = to_pil_image(encode_img_c[j].to(torch.uint8))  # C,H,W -> PIL espera C,H,W uint8
+                    
+                    # first way
+                    pil = to_pil_image(encode_img_c[j].cpu())
+                    pil.save(save_path_full, format="PNG", compress_level=0)
+                    
+                    # second way
+                    #save_image(encode_img_c[j].cpu(), save_path_full)                    
+                elif save_format == 'npy':
+                    arr = encode_img_c[j].detach().cpu().numpy().astype("float32")  # C,H,W en [0,255]
+                    arr = np.transpose(arr, (1, 2, 0))  # H,W,C
+                    npy_path = save_path_full.with_suffix(".npy")
+                    #print(f"Saving watermarked image to {npy_path}")
+                    np.save(npy_path, arr)
     encoder.train()
     decoder.train()
 
@@ -80,16 +90,20 @@ class data_inference(Dataset):
         self.im_size = image_size
         self.bpp = bpp
 
-        assert dataset in ['facelab_london', 'CFD', 'ONOT', 'LFW'], "Invalid DataSet. only support ['facelab_london', 'CFD', 'ONOT']."
+        assert dataset in ['facelab_london', 'CFD', 'ONOT', 'LFW', 'SCface', 'ONOT_set1'], "Invalid DataSet. only support ['facelab_london', 'CFD', 'ONOT']."
 
         if dataset == 'facelab_london':
             self.files_list = glob(os.path.join(self.data_path, '*.jpg'))
         elif dataset == 'CFD':
             self.files_list = glob(os.path.join(self.data_path, '*.jpg'))
-        elif dataset == 'ONOT':
+        elif dataset == 'ONOT' or dataset == 'ONOT_set1':
             self.files_list = glob(os.path.join(self.data_path, '*.png'))
         elif dataset == 'LFW':
             self.files_list = glob(os.path.join(self.data_path, '*.jpg'))
+        elif dataset == 'SCface':
+            self.files_list = glob(os.path.join(self.data_path, '*.jpg'))
+            if not self.files_list:
+                self.files_list = glob(os.path.join(self.data_path, '*.JPG'))
 
         if not self.files_list:
             raise RuntimeError(f"No image files found in {self.data_path} for dataset {dataset} with specified extension.")
@@ -114,7 +128,6 @@ class data_inference(Dataset):
         messages = None # Initialize messages to None or a default zero array
 
         self.n_channels, self.msg_range, self.mapping_factor = get_mapping_params(self.bpp)
-        
         try:
             # Execute SQL query to get the watermark data for the current filename
             self.cursor.execute("SELECT watermark_data FROM watermarks WHERE image_filename = ?", (filename,))
@@ -131,7 +144,11 @@ class data_inference(Dataset):
 
         if watermark_str:
             # Convert the watermark string ('0101...') to a NumPy array of floats (0.0 or 1.0)
-            messages_flat = np.array(list(watermark_str)).astype(np.float32)
+            if self.msg_range - 1 > 1:
+                messages_flat = np.array([float(bit) for bit in watermark_str.split(',')]).astype(np.float32)
+            else:
+                messages_flat = np.array(list(watermark_str)).astype(np.float32)
+
             messages = symbols_to_message_image(messages_flat, self.bpp, (self.im_size[0], self.im_size[1]))
         
         return img_cover, messages, filename

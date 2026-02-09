@@ -241,7 +241,8 @@ def load_and_preprocess_image(image_path: Path,
             img_cover = np.array(img_cover, dtype=np.float32)
 
     elif image_format == 'npy':
-        img_cover = np.load(image_path)
+        arr = np.load(image_path) 
+        #img_cover = np.transpose(arr, (2, 0, 1))
         #img_array = np.clip(img_array, 0, 255)
         if img_norm:
             img_cover = img_cover / 255.0       

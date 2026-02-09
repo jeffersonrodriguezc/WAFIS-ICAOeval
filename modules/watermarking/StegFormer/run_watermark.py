@@ -8,15 +8,15 @@ from pathlib import Path
 import torch
 from torchmetrics import PeakSignalNoiseRatio, StructuralSimilarityIndexMeasure
 from utils import load_and_preprocess_image, get_watermark_from_db, load_weights, symbols_to_message_image, make_output_writable    
+from model import build_models
 import numpy as np
 from tqdm import tqdm
 
 # Import project modules
 # - StegFormer class and training-time utilities
-from model import StegFormer
 # reverse_message_image will be used for accuracy; we also add robust fallbacks here
 from datasets import data_inference, inference
-from utils import get_message_accuracy, compute_image_score
+from utils import get_message_accuracy, compute_image_score, compute_wm_legth
 from torch.utils.data import DataLoader
 
 # Set the seed for reproducibility
@@ -27,31 +27,7 @@ random.seed(seed); np.random.seed(seed)
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
 
-# Models
-# -------------------------
-def build_models(args):
-    # Mirror train.py variants
-    if args.use_model == 'StegFormer-S':
-        print("Using StegFormer-S model with custom depth and parameters")
-        encoder = StegFormer(img_resolution=args.image_size, 
-                            input_dim=(3 + args.secret_channels), cnn_emb_dim=8, output_dim=3,
-                            drop_key=False, patch_size=2, window_size=8, output_act=args.output_act, depth=[1, 1, 1, 1, 2, 1, 1, 1, 1], depth_tr=[2, 2, 2, 2, 2, 2, 2, 2])
-        decoder = StegFormer(img_resolution=args.image_size, 
-                            input_dim=3, cnn_emb_dim=8, output_dim=args.secret_channels,
-                            drop_key=False, patch_size=2, window_size=8, output_act=args.output_act, depth=[1, 1, 1, 1, 2, 1, 1, 1, 1], depth_tr=[2, 2, 2, 2, 2, 2, 2, 2])
-    elif args.use_model == 'StegFormer-B':
-        print("Using StegFormer-B model with default parameters")
-        encoder = StegFormer(img_resolution=args.image_size, 
-                            input_dim=(3 + args.secret_channels), cnn_emb_dim=16, output_dim=3)
-        decoder = StegFormer(img_resolution=args.image_size, input_dim=3, cnn_emb_dim=16, output_dim=args.secret_channels)
-    elif args.use_model == 'StegFormer-L':
-        print("Using StegFormer-L model with larger parameters")
-        encoder = StegFormer(img_resolution=args.image_size, 
-                            input_dim=(3 + args.secret_channels), cnn_emb_dim=32, output_dim=3, depth=[2, 2, 2, 2, 2, 2, 2, 2, 2])
-        decoder = StegFormer(img_resolution=args.image_size, input_dim=3, cnn_emb_dim=32, output_dim=args.secret_channels, depth=[2, 2, 2, 2, 2, 2, 2, 2, 2])
-    else:
-        raise ValueError(f"Unknown use_model: {args.use_model}")
-    return encoder, decoder
+
 # -------------------------
 # Runner
 # -------------------------
@@ -61,7 +37,7 @@ def main():
     parser.add_argument('--train_dataset', type=str, default='celeba_hq',
                         help='Name of the training dataset used for the model') 
     # Model/ckpt
-    parser.add_argument('--dataset', type=str, choices=['facelab_london', 'CFD', 'ONOT', 'LFW'], default='facelab_london')
+    parser.add_argument('--dataset', type=str, choices=['facelab_london', 'CFD', 'ONOT', 'LFW', 'SCface', 'ONOT_set1'], default='facelab_london')
     parser.add_argument('--use_model', type=str, choices=['StegFormer-S','StegFormer-B','StegFormer-L'], default='StegFormer-B')
     parser.add_argument("--exp_name", type=str, default="1_1_clamp_StegFormer-B_baseline")
     parser.add_argument("--model_name", type=str, default="stegformer")
@@ -76,6 +52,8 @@ def main():
     parser.add_argument('--set_name', type=str, choices=['test','templates'], default='test')
     parser.add_argument('--test', action='store_true', 
                         help='Run in test mode for single image watermark extraction verification.')
+    parser.add_argument('--format_image_save', type=str, choices=['png','npy'], default='png',
+                        help='Format used to save watermarked images during inference.')
     parser.add_argument('--test_image_filename', type=str, 
                         help='Original Filename (processed not watermarked) of the image to test extraction from (e.g., "001_image.jpg"). Required with --test.')
     parser.add_argument('--device', type=int, default=0)
@@ -97,14 +75,15 @@ def main():
         if args.set_name == 'templates':
             db_name = "watermarks_BBP_3_196608_39321_templates.db"
         secret_channels = 3
-    elif args.bpp == 4: 
-        db_name = ""
-        secret_channels = 1
     elif args.bpp == 6:
-        db_name = ""  
+        db_name = "watermarks_BBP_6_196608_39321.db"
+        if args.set_name == 'templates':
+            db_name = "watermarks_BBP_6_196608_39321_templates.db"    
         secret_channels = 3         
     elif args.bpp == 8:
-        db_name = ""
+        db_name = "watermarks_BBP_8_131072_13107.db"
+        if args.set_name == 'templates':
+            db_name = "watermarks_BBP_8_131072_13107_templates.db"
         secret_channels = 2
     else:
         raise ValueError(f"Unsupported bpp: {args.bpp}")
@@ -112,13 +91,12 @@ def main():
     # define paths
     input_dir = Path('/app/facial_data')
     model_path = Path(f'/app/runs/{args.exp_name}/{args.train_dataset}/model')
-    base_path = Path(f'/app/output/{args.model_name}') / args.exp_name / "inference" / f"{args.dataset}"
+    base_path = Path(f'/app/output/{args.model_name}') / args.exp_name / "inference" / f"{args.train_dataset}" / f"{args.dataset}"
     output_save_dir = base_path / 'watermarked_images'
     if args.set_name == 'templates':
         output_save_dir = base_path / 'watermarked_templates'
     output_save_dir.mkdir(parents=True, exist_ok=True)    
     args.secret_channels = secret_channels
-    watermark_db_path = os.path.join(input_dir, args.dataset, 'processed', 'watermarks', db_name)
 
     # Load the model
     device = torch.device(args.device)
@@ -140,49 +118,69 @@ def main():
     cal_ssim = StructuralSimilarityIndexMeasure().to(device)
 
     # Logic for test mode
-    if args.test and args.set_name == 'test':
-        inference_test_path = os.path.join(input_dir, args.dataset, 'processed', 'test')
+    if args.test:
+        inference_test_path = os.path.join(input_dir,args.dataset, 'processed', 'test')
+        if args.set_name == 'templates':
+            inference_test_path = os.path.join(input_dir, args.dataset, 'processed', 'templates')
+        watermark_db_path = os.path.join(input_dir, args.dataset, 'processed', 'watermarks', db_name)
 
         if args.test_image_filename:
             filenames = [args.test_image_filename]
             print(f"[TEST] for a single image: {args.test_image_filename}")
         else:
             inference_data_path = output_save_dir
-            filenames = [p.name for p in Path(inference_data_path).glob('*')]
-            filenames.sort()
+            if args.format_image_save == 'png':
+                filenames = [p.name for p in Path(inference_data_path).glob('*.png')]
+                filenames.sort()
+            else:
+                filenames = [p.name for p in Path(inference_data_path).glob('*.npy')]
+                filenames.sort()
+            
             if not filenames:
                 print(f"[TEST] Did not find any images in: {inference_data_path}")
                 return
             print(f"[TEST] Batch mode: {len(filenames)} founded images in {inference_data_path}")
-
+        
+        decoder.eval() # Set decoder to evaluation mode
         acc_list = []
         psnr_list = []
         ssim_list = []
         processed = 0
-
         with torch.no_grad():
-            for fname in tqdm(filenames, desc="Processing watermarked images..."):
-                # Get the true watermark from DB
+            for fname in filenames:
+                # 1. Get the true watermark message from the database
                 # remember watermaked images are stored as png but the db uses jpg or original extension
-                if args.dataset != 'ONOT':
-                    true_message = get_watermark_from_db(watermark_db_path, fname.replace('png','jpg'))
+                if args.dataset.split('_')[0] != 'ONOT' :
+                    if args.format_image_save == 'png':
+                        true_message = get_watermark_from_db(watermark_db_path, fname.replace('png','jpg'))
+                    else:
+                        true_message = get_watermark_from_db(watermark_db_path, fname.replace('npy','jpg'))
                 else:
-                    # ONOT uses png images in test set
-                    true_message = get_watermark_from_db(watermark_db_path, fname)
-                    
+                    if args.format_image_save == 'png':
+                        true_message = get_watermark_from_db(watermark_db_path, fname)
+                    else:
+                        true_message = get_watermark_from_db(watermark_db_path, fname.replace('npy','png'))
+                
                 if true_message is None:
-                    print(f"[WARNING] Did not find watermark for image: {fname}")
+                    print(f"Could not retrieve true watermark for {fname}. Skipping.")
                     continue
-                # convert to image watermark
-                true_message_img = symbols_to_message_image(true_message, args.bpp, (args.image_size, args.image_size)) 
-
+            
                 # 2. Read the watermarked image
-                wm_path = (output_save_dir / fname).with_suffix(".png")
-                if args.dataset != 'ONOT':
-                    img_path = Path(inference_test_path) / fname.replace('png','jpg') # original image path
+                if args.format_image_save == 'png':
+                    wm_path = (output_save_dir / fname).with_suffix(".png")
                 else:
-                    # ONOT uses png images in test set
-                    img_path = Path(inference_test_path) / fname
+                    wm_path = (output_save_dir / fname).with_suffix(".npy")
+
+                if args.dataset.split('_')[0] != 'ONOT':
+                    if args.format_image_save == 'png':
+                        img_path = Path(inference_test_path) / fname.replace('png','jpg') # original image path
+                    else:
+                        img_path = Path(inference_test_path) / fname.replace('npy','jpg') # original image path
+                else:
+                    if args.format_image_save == 'png':
+                        img_path = Path(inference_test_path) / fname # original image path
+                    else:
+                        img_path = Path(inference_test_path) / fname.replace('npy','png') # original image path
 
                 if not img_path.exists():
                     print(f"[SKIP] Does not exist: {fname} in: {img_path}")
@@ -192,8 +190,12 @@ def main():
                     print(f"[SKIP] Does not exist: {fname} in: {wm_path}")
                     continue
 
+                # convert to image watermark --only for this algorithm
+                true_message_img = symbols_to_message_image(true_message, args.bpp, (args.image_size, args.image_size)) 
+
                 # 3. Load and preprocess the cover image
-                watermarked_image = load_and_preprocess_image(wm_path, args.image_size)
+                #watermarked_image = load_and_preprocess_image(wm_path, args.image_size, norm=True)
+                watermarked_image = load_and_preprocess_image(wm_path, args.image_size, image_format=args.format_image_save) 
                 image = load_and_preprocess_image(img_path, args.image_size)
 
                 # 4. Decode the message
@@ -248,32 +250,36 @@ def main():
             print("---------------------------------------------------")
 
             # open the results_summary.json file and strore this results there
-            results_filepath = base_path / "results_summary.json"
-            if results_filepath.exists():
-                with open(results_filepath, "r") as f:
-                    results_data = json.load(f)
-
-                results_data["accuracy_offline"] = acc_offline_mean.item()
-                results_data["accuracy_offline_std"] = acc_offline_std.item()
-                results_data["psnr_offline"] = psnr_offine_mean.item()
-                results_data["psnr_offline_std"] = psnr_offine_std.item()
-                results_data["ssim_offline"] = ssim_offine_mean.item()
-                results_data["ssim_offline_std"] = ssim_offine_std.item()
-                
-                with open(results_filepath, "w") as f:
-                    json.dump(results_data, f, indent=2)
-                print(f"Results updated in: {results_filepath}")
-            else:
-                print(f"Results file not found, skipping update: {results_filepath}")
+            if args.format_image_save == 'png':
+                # open the results_summary.json file and strore this results there
+                results_filepath = base_path / "results_summary.json"
+                if results_filepath.exists():
+                    with open(results_filepath, "r") as f:
+                        results_data = json.load(f)
+                        
+                    results_data["accuracy_offline"] = acc_offline_mean.item()
+                    results_data["accuracy_offline_std"] = acc_offline_std.item()
+                    results_data["psnr_offline"] = psnr_offine_mean.item()
+                    results_data["psnr_offline_std"] = psnr_offine_std.item()
+                    results_data["ssim_offline"] = ssim_offine_mean.item()
+                    results_data["ssim_offline_std"] = ssim_offine_std.item()
+                    
+                    with open(results_filepath, "w") as f:
+                        json.dump(results_data, f, indent=2)
+                    print(f"Results updated in: {results_filepath}")
+                else:
+                    print(f"Results file not found, skipping update: {results_filepath}")
             
         return # Exit main         
     
     # end logic for test mode
     else:
         # test data loader
-        inference_data_path = os.path.join(input_dir, args.dataset, 'processed', 'test')
+        inference_data_path = os.path.join(input_dir,args.dataset, 'processed', 'test')
         if args.set_name == 'templates':
             inference_data_path = os.path.join(input_dir, args.dataset, 'processed', 'templates')
+
+        watermark_db_path = os.path.join(input_dir,args.dataset, 'processed','watermarks', db_name)
 
         # inference face dataloader
         inference_on_face_loader = DataLoader(
@@ -291,7 +297,7 @@ def main():
 
         # inference process
         test_acc, test_psnr, test_ssim, test_acc_std, test_psnr_std, test_ssim_std = inference(inference_on_face_loader, encoder, decoder, device, 
-                                                   args.bpp, args.norm_train, output_save_dir, cal_psnr, cal_ssim)
+                                                   args.bpp, args.norm_train, output_save_dir, cal_psnr, cal_ssim, args.format_image_save)
 
         print(f"\n--- Inference results ---")
         print(f"Accuracy: {test_acc:.4f}")
@@ -302,7 +308,7 @@ def main():
         print(f"SSIM STD: {test_ssim_std:.4f}")
         print("-------------------------")
 
-        if args.set_name == 'test':
+        if args.set_name == 'test' and args.format_image_save == 'png':
             # Store the results in a JSON file 
             results_data = {
                 "timestamp": datetime.now().isoformat(),
@@ -314,7 +320,7 @@ def main():
                 "OFIQ_score": 0.0,  # Placeholder for OFIQ score
                 "ICAO_compliance": False,  # Placeholder for ICAO compliance
                 "bpp": args.bpp,
-                "watermark_lenght": args.image_size * args.image_size * args.bpp, # valid until bpp=3
+                "watermark_lenght": compute_wm_legth(args.bpp, args.image_size),
                 "accuracy": test_acc.item(),
                 "accuracy_std": test_acc_std.item(),
                 "psnr": test_psnr.item(),
