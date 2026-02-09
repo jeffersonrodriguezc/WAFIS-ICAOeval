@@ -67,3 +67,5 @@ Thumbs.db
 
 # ignore all the experiments folders
 **/experiments/
+
+**/.Trash-0/
