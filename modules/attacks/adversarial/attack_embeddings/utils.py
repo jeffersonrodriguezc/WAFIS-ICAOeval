@@ -14,6 +14,7 @@ def load_and_preprocess_image(image_path: Path,
                               im_size: int, 
                               image_format: str = 'png') -> torch.Tensor:
     """
+    Loads an image from the given path, resizes it to the specified size, and converts it to a PyTorch tensor.
     """
     # Load and process the cover image
     if image_format == 'png':
@@ -56,38 +57,45 @@ def tensor2img(var):
 
 def linf_project(delta, epsilon):
     """
-    Proyecta la perturbación delta dentro de una bola L-infinito de radio epsilon.
-    Asegura que ningún cambio individual supere el umbral.
+    Project delta onto the L-infinity ball of radius epsilon.
+        This is done by clamping each element of delta to be within [-epsilon, epsilon].
+        If an element of delta is greater than epsilon, it will be set to epsilon.
+        If an element of delta is less than -epsilon, it will be set to -epsilon.
     """
     return torch.clamp(delta, -epsilon, epsilon)
 
 def pgd_step_linf(delta, grad, step_size):
     """
-    Paso PGD usando el signo del gradiente (típico de L-infinito).
+    Perform a PGD step using the sign of the gradient (for the L-infinity).
     """
-    # Usamos el signo del gradiente: si el gradiente es positivo, subimos; si es negativo, bajamos.
-    # Como queremos MINIMIZAR la pérdida, restamos el signo.
+    # We use the sign of the gradient: if the gradient is positive, we go up; if it's negative, we go down.
+    # Since we want to MINIMIZE the loss, we subtract the sign.
     return delta - step_size * torch.sign(grad)
 
 def l2_project(delta, epsilon):
+    """
+    Project delta onto the L2 ball of radius epsilon.
+        This is done by scaling delta if its L2 norm exceeds epsilon.
+        If the L2 norm of delta is less than or equal to epsilon, it is returned unchanged.
+    """
     delta_norm = torch.norm(delta.view(delta.size(0), -1), dim=1, keepdim=True)
     factor = torch.clamp(epsilon / (delta_norm + 1e-12), max=1.0)
     return delta * factor
 
 def pgd_step(delta, grad, step_size):
     """
-    Realiza un paso de actualización PGD normalizado en L2.
+    Perform a PGD step using the normalized gradient. This is used for the L2 case.
     """
-    # 1. Calcular la norma L2 del gradiente para cada elemento del batch
-    # .view(N, -1) aplana el tensor manteniendo el batch, para calcular la norma por imagen
+    # 1. Calculate the L2 norm of the gradient for each element in the batch
+    # .view(N, -1) flattens the tensor while keeping the batch dimension, to calculate the norm per element.
     grad_norm = torch.norm(grad.view(grad.size(0), -1), dim=1, keepdim=True)
     
-    # 2. Normalizar el gradiente
-    # Dividimos el gradiente por su norma. Ahora 'normalized_grad' tiene longitud 1.
-    # Sumamos 1e-8 para evitar división por cero si el gradiente es nulo.
+    # 2. Normalize the gradient
+    # We divide the gradient by its norm. Now 'normalized_grad' has length 1.
+    # We add 1e-8 to avoid division by zero if the gradient is zero.
     normalized_grad = grad / (grad_norm + 1e-8)
     
-    # 3. Actualizar delta (Gradient DESCENT)
-    # RESTAMOS el gradiente para MINIMIZAR la función de pérdida.
+    # 3. Update delta by moving in the direction of the negative normalized gradient, scaled by the step size.
+    # We subtract the gradient to MINIMIZE the loss function.
     return delta - step_size * normalized_grad    
 

@@ -925,11 +925,10 @@ class AttackEmbeddings:
         Creates DataLoaders for evaluating face recognition performance on both the training and testing datasets
         after the attack.
         """
+        self.face_loader_train = None
+        self.face_loader_test = None
         if set_name == 'all':
             print(f"[*] Creating DataLoaders for Face Recognition Evaluation on both Train and Test sets")
-            self.face_loader_train = None
-            self.face_loader_test = None
-
             # Dataloaders for the face recognition evaluation part, we will use the templates of both datasets
             self.face_loader_train = DataLoader(
                 FaceAttackedDataset(self.opts.data_path,
@@ -964,7 +963,7 @@ class AttackEmbeddings:
                                     id_experiment_attack=self.id_number_exp,
                                     face_model_attacked=self.opts.facenet_mode,
                                     attacked_dataset=self.opts.dataset))  
-        elif set_name == 'val':
+        elif set_name == 'val' or set_name == 'train':
             print(f"[*] Creating DataLoader for Face Recognition Evaluation on the Validation set")
             self.face_loader_train = DataLoader(
                 FaceAttackedDataset(self.opts.data_path,
@@ -982,7 +981,6 @@ class AttackEmbeddings:
                                     id_experiment_attack=self.id_number_exp,
                                     face_model_attacked=self.opts.facenet_mode,
                                     attacked_dataset=self.opts.dataset))
-
         elif set_name == 'test':
             print(f"[*] Creating DataLoader for Face Recognition Evaluation on the Test set")
             self.face_loader_test = DataLoader(

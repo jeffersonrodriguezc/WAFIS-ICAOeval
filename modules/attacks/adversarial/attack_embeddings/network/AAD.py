@@ -13,7 +13,6 @@ def weight_init(m):
     if isinstance(m, nn.ConvTranspose2d):
         nn.init.xavier_normal_(m.weight.data)
 
-
 class AADLayer(nn.Module):
     def __init__(self, c_h, c_att, c_id=256):
         super(AADLayer, self).__init__()
@@ -42,8 +41,6 @@ class AADLayer(nn.Module):
 
         h_out = (1 - M) * A + M * I
         return h_out
-
-
 
 class AADResBlock(nn.Module):
     def __init__(self, c_in, c_out, c_att, c_id=256):
@@ -82,8 +79,6 @@ class AADResBlock(nn.Module):
         
         h_out = x + h_mid
         return h_out
-
-
 
 class AADGenerator(nn.Module):
     def __init__(self, c_id=256):
@@ -137,69 +132,47 @@ class AADGenerator(nn.Module):
 class FusionModule(nn.Module):
     def __init__(self, input_channels=6):
         """
-        Input: Concatenación de Img Original (3ch) + Img Adversarial (3ch) = 6 canales.
-        Output: Máscara de 1 canal (valores 0 a 1).
+        Fusion module that learns a spatial mask to blend the original and adversarial images.
+        The mask is weighted by a spatial weight map to estimulate the importance of preserving specific regions (e.g., face) over others (background).
+        Input: Concatenation of Original Image (3ch) + Adversarial Image (3ch) = 6 channels.
+        Output: 1-channel mask (values 0 to 1).
         """
         super(FusionModule, self).__init__()
         self.net = nn.Sequential(
-            # Capa 1: Analizar características locales
+            # Layer 1: Get initial features for mask generation
             nn.Conv2d(input_channels, 32, kernel_size=3, padding=1),
             nn.ReLU(inplace=True),
             
-            # Capa 2: Refinar la forma de la máscara
+            # Layer 2: Refine the mask shape
             nn.Conv2d(32, 32, kernel_size=3, padding=1),
             nn.ReLU(inplace=True),
             
-            # Capa 3: Comprimir a 1 canal
+            # Layer 3: Compress to 1 channel
             nn.Conv2d(32, 1, kernel_size=1)
         )
-        self.sigmoid = nn.Sigmoid()
+        self.sigmoid = nn.Sigmoid() # To ensure mask values are between 0 and 1
 
     def forward(self, img_org, img_adv, weight_mask=None):
-        # Concatenar inputs: (Batch, 6, H, W)
+        # Concatenate original and adversarial images along the channel dimension: [B, 6, H, W]
         x = torch.cat([img_org, img_adv], dim=1)
         
-        # Generar logits y normalizar a [0, 1]
+        # Generate logits [0, 1]
         mask = self.sigmoid(self.net(x))
-        if weight_mask is not None:
+        if weight_mask is not None: 
+            # Apply spatial weighting to the mask.
             mask = mask * weight_mask
         
-        # Mezcla diferenciable:
-        # Mask = 1 -> Usa Adversarial (Identidad falsa)
-        # Mask = 0 -> Usa Original (Marca de agua intacta)
+        # Differentiable blending:
+        # Mask = 1 -> Use Adversarial (Fake Identity)
+        # Mask = 0 -> Use Original (Watermark Intact)
         out = mask * img_adv + (1 - mask) * img_org
         
         return out, mask
 
-def get_spatial_weights(h, w, device, radius=0.6, sharpness=15.0, center_val=0.2):
-    """
-    Generates a "plateau" type weight matrix.
-    - Center (Face): Constant 'center_val' value (allows gradient flow).
-    - Edges (Background): Value tends toward 1.0.
-    """
-    # 1. Create a coordinate grid from [-1, 1]
-    x = torch.linspace(-1, 1, w, device=device)
-    y = torch.linspace(-1, 1, h, device=device)
-    grid_y, grid_x = torch.meshgrid(y, x, indexing='ij')
-    
-    # 2. Calculate Euclidean distance from the center (0,0)
-    dist = torch.sqrt(grid_x**2 + grid_y**2)
-    
-    # 3. Create a smooth transition (Sigmoid) between the center and the edge
-    # sharpness controls how "hard" the circle's edge is
-    # radius controls the size of the central zone
-    transition = torch.sigmoid(sharpness * (dist - radius))
-    
-    # 4. Adjust the minimum value so it is not 0.0
-    # Now the center will be 'center_val' and the edge will be 1.0
-    weight_map = transition * (1.0 - center_val) + center_val
-    
-    return weight_map.view(1, 1, h, w)
-
 def get_spatial_weights_gauss(h, w, device, sigma_scale=0.4, center_val=0.2): 
     """
     Generates a spatial weight matrix (1, 1, H, W) for broadcasting.
-    - Center (Face) -> Low values (now starting at 'center_val' instead of 0.0).
+    - Center (Face) -> Low values (starting at 'center_val' to avoid 0.0 values).
     - Edges (Background) -> High values (~1.0).
     """
     # 1. Create coordinate grid [-1, 1] (Your original code)
@@ -207,14 +180,13 @@ def get_spatial_weights_gauss(h, w, device, sigma_scale=0.4, center_val=0.2):
     y = torch.linspace(-1, 1, h, device=device)
     grid_y, grid_x = torch.meshgrid(y, x, indexing='ij') 
     
-    # 2. Calculate squared distance from center (0,0) (Your original code)
+    # 2. Calculate squared distance from center (0,0) for each pixel. 
     d2 = grid_x**2 + grid_y**2
     
-    # 3. Inverted Gaussian (Your original code)
+    # 3. Inverted Gaussian 
     gaussian = torch.exp(-d2 / (2 * sigma_scale**2))
     weight_map = 1.0 - gaussian # This goes from 0.0 to 1.0
     
-    # --- NEW ADJUSTMENT ---
     # We rescale the map so the minimum is 'center_val' instead of 0.0
     # formula: new_val = original_val * (max - min) + min
     weight_map = weight_map * (1.0 - center_val) + center_val
@@ -223,57 +195,8 @@ def get_spatial_weights_gauss(h, w, device, sigma_scale=0.4, center_val=0.2):
     # 4. Add batch and channel dimensions (Your original code)
     return weight_map.view(1, 1, h, w)    
 
-def get_spatial_weights_gaussian_old(h, w, device, sigma_scale=0.4):
-    """
-    Genera una matriz de pesos espaciales con forma (1, 1, H, W) para broadcasting.
-    - Centro (Cara) -> Valores bajos (~0.0). 'Barato' enmascarar aquí.
-    - Bordes (Fondo) -> Valores altos (~1.0). 'Caro' enmascarar aquí.
-    """
-    # 1. Crear grid de coordenadas [-1, 1]
-    x = torch.linspace(-1, 1, w, device=device)
-    y = torch.linspace(-1, 1, h, device=device)
-    grid_y, grid_x = torch.meshgrid(y, x, indexing='ij') # Forma (H, W)
-    
-    # 2. Calcular distancia al cuadrado desde el centro (0,0)
-    d2 = grid_x**2 + grid_y**2
-    
-    # 3. Gaussiana invertida
-    # sigma_scale controla el radio del "hueco" central. 
-    # Menor sigma = hueco más pequeño y concentrado.
-    gaussian = torch.exp(-d2 / (2 * sigma_scale**2))
-    
-    # Invertimos: 1.0 en bordes, 0.0 en centro
-    weight_map = 1.0 - gaussian
-    
-    # 4. AÑADIR DIMENSIONES DE BATCH Y CANAL -> (1, 1, H, W)
-    # Esto es lo que permite multiplicar por un batch de tamaño N automáticamente
-    return weight_map.view(1, 1, h, w)
 
-def get_gaussian_kernel(kernel_size=5, sigma=1.0, channels=3):
-    # Crear kernel gaussiano para separar frecuencias
-    x_coord = torch.arange(kernel_size)
-    x_grid = x_coord.repeat(kernel_size).view(kernel_size, kernel_size)
-    y_grid = x_grid.t()
-    xy_grid = torch.stack([x_grid, y_grid], dim=-1).float()
-    mean = (kernel_size - 1) / 2.
-    variance = sigma**2.
-    gaussian_kernel = (1./(2.*math.pi*variance)) * torch.exp( -torch.sum((xy_grid - mean)**2., dim=-1) / (2*variance) )
-    gaussian_kernel = gaussian_kernel / torch.sum(gaussian_kernel)
-    gaussian_kernel = gaussian_kernel.view(1, 1, kernel_size, kernel_size)
-    return gaussian_kernel.repeat(channels, 1, 1, 1)
 
-def frequency_injection(img_gen, img_org, kernel, device):
-    # 1. Calcular el padding dinámicamente según el tamaño del kernel
-    # Si kernel=3 -> pad=1. Si kernel=5 -> pad=2.
-    k_size = kernel.shape[2]
-    pad = k_size // 2 
-    
-    # 2. Aplicar convolución con el padding correcto
-    # Nota: groups=3 asume que la imagen tiene 3 canales (RGB)
-    low_real = F.conv2d(img_org, kernel.to(device), padding=pad, groups=3)
-    high_real = img_org - low_real
-    
-    low_gen = F.conv2d(img_gen, kernel.to(device), padding=pad, groups=3)
-    
-    # 3. Fusionar
-    return low_gen + high_real
+
+
+
