@@ -975,7 +975,7 @@ class AttackEmbeddings:
                                     IMG_EXTENSION=self.opts.img_extension,
                                     max_images=self.opts.max_images_templates_train,
                                     ori_data_path=self.opts.db_path,
-                                    set_name='train',
+                                    set_name='val',
                                     experiment_dir=self.opts.exp_dir,
                                     experiment_name_attack=self.folder_struct,
                                     id_experiment_attack=self.id_number_exp,
