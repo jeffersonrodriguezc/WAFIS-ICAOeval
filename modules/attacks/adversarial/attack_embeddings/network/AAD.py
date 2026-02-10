@@ -171,7 +171,59 @@ class FusionModule(nn.Module):
         
         return out, mask
 
-def get_spatial_weights(h, w, device, sigma_scale=0.4):
+def get_spatial_weights(h, w, device, radius=0.6, sharpness=15.0, center_val=0.2):
+    """
+    Generates a "plateau" type weight matrix.
+    - Center (Face): Constant 'center_val' value (allows gradient flow).
+    - Edges (Background): Value tends toward 1.0.
+    """
+    # 1. Create a coordinate grid from [-1, 1]
+    x = torch.linspace(-1, 1, w, device=device)
+    y = torch.linspace(-1, 1, h, device=device)
+    grid_y, grid_x = torch.meshgrid(y, x, indexing='ij')
+    
+    # 2. Calculate Euclidean distance from the center (0,0)
+    dist = torch.sqrt(grid_x**2 + grid_y**2)
+    
+    # 3. Create a smooth transition (Sigmoid) between the center and the edge
+    # sharpness controls how "hard" the circle's edge is
+    # radius controls the size of the central zone
+    transition = torch.sigmoid(sharpness * (dist - radius))
+    
+    # 4. Adjust the minimum value so it is not 0.0
+    # Now the center will be 'center_val' and the edge will be 1.0
+    weight_map = transition * (1.0 - center_val) + center_val
+    
+    return weight_map.view(1, 1, h, w)
+
+def get_spatial_weights_gauss(h, w, device, sigma_scale=0.4, center_val=0.2): 
+    """
+    Generates a spatial weight matrix (1, 1, H, W) for broadcasting.
+    - Center (Face) -> Low values (now starting at 'center_val' instead of 0.0).
+    - Edges (Background) -> High values (~1.0).
+    """
+    # 1. Create coordinate grid [-1, 1] (Your original code)
+    x = torch.linspace(-1, 1, w, device=device)
+    y = torch.linspace(-1, 1, h, device=device)
+    grid_y, grid_x = torch.meshgrid(y, x, indexing='ij') 
+    
+    # 2. Calculate squared distance from center (0,0) (Your original code)
+    d2 = grid_x**2 + grid_y**2
+    
+    # 3. Inverted Gaussian (Your original code)
+    gaussian = torch.exp(-d2 / (2 * sigma_scale**2))
+    weight_map = 1.0 - gaussian # This goes from 0.0 to 1.0
+    
+    # --- NEW ADJUSTMENT ---
+    # We rescale the map so the minimum is 'center_val' instead of 0.0
+    # formula: new_val = original_val * (max - min) + min
+    weight_map = weight_map * (1.0 - center_val) + center_val
+    # ----------------------
+    
+    # 4. Add batch and channel dimensions (Your original code)
+    return weight_map.view(1, 1, h, w)    
+
+def get_spatial_weights_gaussian_old(h, w, device, sigma_scale=0.4):
     """
     Genera una matriz de pesos espaciales con forma (1, 1, H, W) para broadcasting.
     - Centro (Cara) -> Valores bajos (~0.0). 'Barato' enmascarar aquí.

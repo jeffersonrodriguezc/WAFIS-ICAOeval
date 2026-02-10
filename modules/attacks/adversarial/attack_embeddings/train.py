@@ -8,7 +8,7 @@ import json
 from dataset import WatermarkedDataset, FaceAttackedDataset
 from options.options import InjectionOptions
 from utils import l2_norm, alignment, tensor2img, pgd_step, l2_project, pgd_step_linf, linf_project
-from network.AAD import AADGenerator, FusionModule, get_gaussian_kernel, frequency_injection, get_spatial_weights
+from network.AAD import AADGenerator, FusionModule, get_spatial_weights_gauss
 from network.MAE import MLAttrEncoder
 from network.face_modules import Backbone
 from criteria.loss_functions import RecLoss, AdvLoss
@@ -60,22 +60,31 @@ class AttackEmbeddings:
         else:
             # Read if there are created folders to create an id for the current experiment
             last_id_exp = len(os.listdir(os.path.join(self.output_to_save, self.folder_struct)))
-            self.id_number_exp = str(int(last_id_exp) + 1)
-            self.imgout_dir = os.path.join(self.output_to_save, self.folder_struct, self.id_number_exp, 'attacked_samples')
-            #self.records_dir = os.path.join(self.output_to_save, self.folder_struct, self.id_number_exp, 'attack_records')
-            self.logs_dir = os.path.join(self.output_to_save, self.folder_struct, self.id_number_exp, 'logs')
-            self.ckpt_dir = os.path.join(self.output_to_save, self.folder_struct, self.id_number_exp, 'checkpoints')
-            # create folders
-            os.makedirs(self.imgout_dir, exist_ok=True)
-            os.makedirs(self.ckpt_dir, exist_ok=True)
-            os.makedirs(self.logs_dir, exist_ok=True)
-            #os.makedirs(self.records_dir, exist_ok=True)
-            os.makedirs(os.path.join(self.imgout_dir, 'train'), exist_ok=True)
-            os.makedirs(os.path.join(self.imgout_dir, 'test'), exist_ok=True)
-            if self.opts.baseline == False:
-                os.makedirs(os.path.join(self.imgout_dir, 'val'), exist_ok=True)
+            if self.opts.restore_training == False and self.opts.use_fusion_module == True and self.opts.baseline == False:
+                self.id_number_exp = str(int(last_id_exp) + 1)
+                self.imgout_dir = os.path.join(self.output_to_save, self.folder_struct, self.id_number_exp, 'attacked_samples')
+                #self.records_dir = os.path.join(self.output_to_save, self.folder_struct, self.id_number_exp, 'attack_records')
+                self.logs_dir = os.path.join(self.output_to_save, self.folder_struct, self.id_number_exp, 'logs')
+                self.ckpt_dir = os.path.join(self.output_to_save, self.folder_struct, self.id_number_exp, 'checkpoints')
+                # create folders
+                os.makedirs(self.imgout_dir, exist_ok=True)
+                os.makedirs(self.ckpt_dir, exist_ok=True)
+                os.makedirs(self.logs_dir, exist_ok=True)
+                #os.makedirs(self.records_dir, exist_ok=True)
+                os.makedirs(os.path.join(self.imgout_dir, 'train'), exist_ok=True)
+                os.makedirs(os.path.join(self.imgout_dir, 'test'), exist_ok=True)
+                if self.opts.baseline == False:
+                    os.makedirs(os.path.join(self.imgout_dir, 'val'), exist_ok=True)
+            elif self.opts.restore_training == True and self.opts.baseline == False and self.opts.use_fusion_module == True:
+                self.id_number_exp = str(last_id_exp)
+                self.imgout_dir = os.path.join(self.output_to_save, self.folder_struct, self.id_number_exp, 'attacked_samples')
+                #self.records_dir = os.path.join(self.output_to_save, self.folder_struct, self.id_number_exp, 'attack_records')
+                self.logs_dir = os.path.join(self.output_to_save, self.folder_struct, self.id_number_exp, 'logs')
+                self.ckpt_dir = os.path.join(self.output_to_save, self.folder_struct, self.id_number_exp, 'checkpoints')
+
         # save all the parameters of the experiment in a json file for later reference
-        self.save_params_to_json()    
+        if self.opts.restore_training == False:
+            self.save_params_to_json()     
 
         print("[*] Initializing Networks...") 
         # Face Recognition is always needed!
@@ -127,7 +136,7 @@ class AttackEmbeddings:
         self.adv_loss = AdvLoss(opts.adv_weight, self.device, mode='evasion')
         self.cal_psnr = PeakSignalNoiseRatio().to(self.device)
         self.cal_ssim = StructuralSimilarityIndexMeasure().to(self.device)
-        self.writer = SummaryWriter(log_dir=self.logs_dir)
+        self.writer = SummaryWriter(log_dir=self.logs_dir, purge_step=self.global_step if self.opts.restore_training else None)
 
         # create datasets and dataloaders
         print("[*] Preparing Datasets and Dataloaders...")
@@ -156,6 +165,9 @@ class AttackEmbeddings:
             #print(f"[*] New Best Model Saved! Loss: {loss:.4f}")
 
     def _load_checkpoint(self):
+        """
+        This function loads the last checkpoint if it exists, allowing the training to resume from where it left off.
+        """
         load_path = os.path.join(self.ckpt_dir, 'last_checkpoint.pth')
         if os.path.exists(load_path):
             print(f"[*] Resuming training from {load_path}")
@@ -206,9 +218,11 @@ class AttackEmbeddings:
 
     def attack_batch_pipeline(self, img_org, tag, update_weights=False):
         """
+        Pipeline computation. Attack directly in the embedding space with PGD, then
+        using the AAD network to generate the adversarial image and optionally the fusion module to preserve the watermark and visual quality of the image.
         """
         # Set the status for the fusion module (training or evaluation) 
-        if self.opts.use_fusion_module and update_weights:
+        if self.opts.use_fusion_module and update_weights and tag == 'train':
             self.fusion_net.train()
         else:
             self.fusion_net.eval()
@@ -218,9 +232,9 @@ class AttackEmbeddings:
             #kernel = get_gaussian_kernel(kernel_size=3, sigma=0.5).to(self.device)
             # spatial weights to regularize the mask of the fusion module, giving more importance 
             # to the central region of the face
-            self.spatial_weights = get_spatial_weights(self.opts.wm_image_size, 
+            self.spatial_weights = get_spatial_weights_gauss(self.opts.wm_image_size, 
                                                    self.opts.wm_image_size, 
-                                                   self.device, sigma_scale=0.4)
+                                                   self.device, sigma_scale=0.5, center_val=0.2)
 
         # 1. Get the original embedding as reference (zid) and the attribute arrays (zatt) before the attack
         with torch.no_grad():
@@ -368,42 +382,46 @@ class AttackEmbeddings:
 
     def attack_batch_baseline_linf(self, img_wm, tag):
         """
-        Escenario Baseline L-infinito: Ataque directo a píxeles.
+        Baseline attack: PGD directly in the pixel space with L-infinity constraint, without using the AAD network or the fusion module.
         """
-        # 1. Obtener embedding original como referencia
+        # 1. Get the original embedding as reference (zid) before the attack
         with torch.no_grad():
-            img_org_aligned = alignment(img_wm) #
-            img_org_for_net = (img_org_aligned - 0.5) / 0.5
-            zid = l2_norm(self.facenet(img_org_for_net)).detach() #
+            img_org_aligned = alignment(img_wm) # resize to 112x112 for ARCface
+            img_org_for_net = (img_org_aligned - 0.5) / 0.5 # ARCFace normalization
+            zid = l2_norm(self.facenet(img_org_for_net)).detach() # Normakization to facilitate the project step of the PGD
 
-        # 2. Inicializar delta_img (perturbación en píxeles)
+        # 2. Initialize delta (perturbation in the pixel space)
         #delta_img = torch.zeros_like(img_wm).to(self.device)
         delta_img = torch.zeros_like(img_wm).uniform_(-self.opts.epsilon, self.opts.epsilon).to(self.device)
-        delta_img.requires_grad = True
+        delta_img.requires_grad = True # To be able to compute gradients with respect to the perturbation in the pixel space
 
         best_attack = None
         best_loss = float('inf')
 
+        # Loop PGD
         for i in range(self.opts.pgd_steps):
-            # Aplicamos la perturbación a la imagen base
+            # Generate the adversarial image by adding the perturbation to the original watermarked image
             x_adv = torch.clamp(img_wm + delta_img, 0, 1)
 
-            # 3. Extraer embedding de la imagen perturbada para calcular pérdida
-            x_adv_aligned = alignment(x_adv) #
-            x_adv_for_net = (x_adv_aligned - 0.5) / 0.5
-            zadv = l2_norm(self.facenet(x_adv_for_net)) #
+            # 3. Extract embedding of the perturbed image to compute loss
+            x_adv_aligned = alignment(x_adv) # resize to 112x112 for ARCface
+            x_adv_for_net = (x_adv_aligned - 0.5) / 0.5 # ARCFace normalization
+            zadv = l2_norm(self.facenet(x_adv_for_net)) # Normakization to facilitate the project step of the PGD
 
-            # 4. Pérdida: Queremos maximizar la distancia (minimizar la similitud)
-            ladv = self.adv_loss(zadv, zid) 
+            # 4. Compute losses
+            # we want to minimize the similarity between the adversarial embedding and the original one (maximize the distance)
+            ladv = self.adv_loss(zadv, zid)
+            # we want to preserve the watermark and the visual quality of the image,
             lrec = self.rec_loss(x_adv, img_wm)
-            loss = ladv +  lrec
+            loss = ladv +  lrec # final loss to minimize
 
+            # 5. Backpropagation and PGD step
             if delta_img.grad is not None: delta_img.grad.zero_()
             loss.backward()
 
-            # 5. Paso PGD L-infinito y Proyección
+            # 6. PGD L-infinity step and Projection
             with torch.no_grad():
-                # Actualizamos usando el signo y recortamos con epsilon
+                # Update delta_img with PGD step and projection in the L-infinity ball
                 delta_img.copy_(pgd_step_linf(delta_img, delta_img.grad, self.opts.step_size))
                 delta_img.copy_(linf_project(delta_img, self.opts.epsilon))
 
@@ -423,7 +441,9 @@ class AttackEmbeddings:
                 best_loss = loss.item()
                 best_attack = (x_adv.detach(), zid.detach(), zadv.detach(), delta_img.detach(), 
                                loss.item(), ladv.item(), lrec.item())
-                
+
+        # After finishing we compute the final attack with the last delta_img obtained, 
+        # to compare it with the best attack obtained in the inner loop of the PGD        
         with torch.no_grad():
             x_adv = torch.clamp(img_wm + delta_img, 0, 1)
             zadv = l2_norm(self.facenet((alignment(x_adv) - 0.5) / 0.5))
@@ -438,17 +458,34 @@ class AttackEmbeddings:
         else:
             return best_attack
 
-    def run_eval_face_recognition(self, filename_results="face_recognition_results.json", epoch=0):
+    def run_eval_face_recognition(self, filename_results="face_recognition_results.json", epoch=0, set_name='all'):
         """
         Evaluate the face recognition performance on the watermarked and attacked images.
             - Computes the cosine similarity between the template and both the watermarked and attacked images.
         :param filename_results: The filename to save the evaluation results.
         :param epoch: The current epoch number for saving results.
+        :param set_name: The dataset split to evaluate ('train', 'val', 'test' or 'all').
         """
-        self.create_FR_sets() # create dataloaders for the evaluation of face recognition performance after the attack
+        self.create_FR_sets(set_name) # create dataloaders for the evaluation of face recognition performance after the attack 
         threshold = self.opts.face_recognition_threshold # threshold for cosine similarity to consider a match in Face Recognition
+
+        # depending where this function is called, we want to evaluate the performance of the face recognition in different 
+        # sets (train, val or test), so we create the corresponding dataloaders for each case.
+        if set_name == 'all':
+            names = ['train', 'test']
+            loaders = [self.face_loader_train, self.face_loader_test]
+        elif set_name == 'val':
+            names = ['train']
+            loaders = [self.face_loader_train]
+        elif set_name == 'test':
+            names = ['test']
+            loaders = [self.face_loader_test]
+        elif set_name == 'train':
+            names = ['train']
+            loaders = [self.face_loader_train]
+
         results = {}
-        for set_name, dataloader in zip(['train', 'test'], [self.face_loader_train, self.face_loader_test]):
+        for set_name, dataloader in zip(names, loaders):
             all_sim_wm = []
             all_sim_attacked = []
             successful_attacks = 0
@@ -489,19 +526,19 @@ class AttackEmbeddings:
                     # The attack is successful if the watermarked image is recognized (sim_wm > threshold) 
                     # and the attacked image is not recognized (sim_attacked <= threshold)
                     attack_success = is_recognized_wm & (~is_recognized_attacked)
-
-                    
+                    # update the counters for the metrics
                     successful_attacks += attack_success.sum().item()
                     correct_wm += is_recognized_wm.sum().item()
                     correct_attacked += is_recognized_attacked.sum().item()
                     total_samples += template_img.size(0)
-
+                    # store the cosine similarities for both cases to compute the average and std later
                     all_sim_wm.extend(sim_wm.cpu().numpy().tolist())
                     all_sim_attacked.extend(sim_attacked.cpu().numpy().tolist())
 
             # --- Compute final metrics for the set ---
             acc_original = (correct_wm / total_samples) * 100
             acc_attacked = (correct_attacked / total_samples) * 100
+            # Attack Success Rate (ASR) is the percentage of samples where the watermarked image is correctly recognized but the attacked image is not recognized.
             asr = (successful_attacks / correct_wm) * 100 if correct_wm > 0 else 0
 
             print(f"\nResultados {set_name.upper()}:")
@@ -533,8 +570,12 @@ class AttackEmbeddings:
          Otherwise, it runs the complete pipeline attack on the embeddings.
         """
         epochs = 1
-        start_epoch = 0
-        step_count = 0
+        if tag == 'train' and self.opts.restore_training:
+            step_count = self.global_step
+            start_epoch = self.start_epoch
+        else:
+            step_count = 0
+            start_epoch = 0
         update_weights = False
         self.inner_step_count = 0
         best_global_loss_avg = float('inf')
@@ -558,6 +599,10 @@ class AttackEmbeddings:
             else:
                 loader = self.test_dataloader
                 tag_new = 'test'
+
+        if tag == 'generalization' and self.opts.baseline == False:
+            loader = self.test_dataloader
+            tag_new = 'test'
                 
         total_steps = len(loader) * epochs
         pbar_epoch = tqdm(range(start_epoch, epochs), desc=f"{tag} Epochs", position=0, leave=True, total=epochs)
@@ -589,8 +634,9 @@ class AttackEmbeddings:
                     imgs_adv, zid, zadv, delta, loss, ladv, lrec= self.attack_batch_pipeline(imgs_wm, tag=tag_new, update_weights=update_weights)
                 
                 # If we are training the fusion module
-                if update_weights:
+                if update_weights and tag_new == 'train':
                     self.global_step += 1
+                    current_log_step = self.global_step
                     is_best = False
                     if loss < self.best_global_loss:
                         self.best_global_loss = loss
@@ -598,6 +644,9 @@ class AttackEmbeddings:
                     # save the model every 50 steps or if it's the best model so far
                     if (self.global_step % 50 == 0) or is_best:
                         self._save_checkpoint(epoch, loss, is_best=is_best)
+                else:
+                    step_count += 1
+                    current_log_step = step_count
 
                 # Compute metrics and log results after the attack for the current batch
                 with torch.no_grad():
@@ -649,20 +698,20 @@ class AttackEmbeddings:
                         self.save_samples(imgs_adv, filenames, tag=tag_new)
 
                 # Log metrics to TensorBoard every 10 steps
-                if (step_count + 1) % 10 == 0:
-                    self.writer.add_scalar(f'{tag_new}/Loss', loss, step_count)
-                    self.writer.add_scalar(f'{tag_new}/Adv_Loss', ladv, step_count)
-                    self.writer.add_scalar(f'{tag_new}/Rec_Loss', lrec, step_count)
-                    self.writer.add_scalar(f'{tag_new}/Cosine_Similarity', cos_sim, step_count)
-                    self.writer.add_scalar(f'{tag_new}/PSNR', p, step_count)
-                    self.writer.add_scalar(f'{tag_new}/SSIM', s, step_count)
-                    self.writer.add_scalar(f'{tag_new}/WM_Acc_Before', acc_b, step_count)
-                    self.writer.add_scalar(f'{tag_new}/WM_Acc_After', acc_a, step_count)
+                if (current_log_step + 1) % 10 == 0:
+                    self.writer.add_scalar(f'{tag_new}/Loss', loss, current_log_step)
+                    self.writer.add_scalar(f'{tag_new}/Adv_Loss', ladv, current_log_step)
+                    self.writer.add_scalar(f'{tag_new}/Rec_Loss', lrec, current_log_step)
+                    self.writer.add_scalar(f'{tag_new}/Cosine_Similarity', cos_sim, current_log_step)
+                    self.writer.add_scalar(f'{tag_new}/PSNR', p, current_log_step)
+                    self.writer.add_scalar(f'{tag_new}/SSIM', s, current_log_step)
+                    self.writer.add_scalar(f'{tag_new}/WM_Acc_Before', acc_b, current_log_step)
+                    self.writer.add_scalar(f'{tag_new}/WM_Acc_After', acc_a, current_log_step)
                 
-                step_count += 1 
-                pbar_batch.set_postfix(step=f"{step_count}/{total_steps}")
+                #step_count += 1 
+                pbar_batch.set_postfix(step=f"{current_log_step}/{total_steps}")
             
-            if update_weights: # only step the scheduler at the end of each epoch if we are training the fusion module
+            if update_weights and tag_new == 'train': # only step the scheduler at the end of each epoch if we are training the fusion module
                 self.scheduler.step()
                 self._save_checkpoint(epoch + 1, loss, is_best=False)  
 
@@ -671,7 +720,10 @@ class AttackEmbeddings:
                 best_global_loss_avg = results['loss'][-1]
 
             # after each epoch we do the evaluation of face recognition performance.
-            self.run_eval_face_recognition(epoch=epoch + 1)
+            if self.opts.baseline == False and tag_new == 'train': # only for pipeline way,
+                # after each epoch of training we evaluate the face recognition performance on the validation set
+                self.testing(f'val_results_{epoch + 1}.json')
+                self.run_eval_face_recognition(epoch=epoch + 1, set_name=tag_new) 
 
         return best_average_results # Return the best average results
 
@@ -732,9 +784,9 @@ class AttackEmbeddings:
 
         return pixel_acc
 
-    def training(self):
+    def training(self, tag='train'):
         print(f"[*] Starting Attack on {self.opts.dataset}")
-        train_results = self.run_attack(tag='train')
+        train_results = self.run_attack(tag=tag)
         print(f"[*] Training Results: {train_results}")
 
         # save the best results in a json file for later reference
@@ -748,13 +800,11 @@ class AttackEmbeddings:
         # for pipeline way it is the templates of the same dataset that we are attacking (validation set)
         if self.opts.baseline == True:
             self.testing('test_results.json')
-        else:
-            self.testing('val_results.json')
-
-    def testing(self, name_file):    
+        
+    def testing(self, name_file, tag='test'):    
         # Test de Generalización
-        print(f"[*] Testing Generalization on {self.opts.dataset_test}")
-        test_results = self.run_attack(tag='test')
+        print(f"[*] Testing Generalization")
+        test_results = self.run_attack(tag=tag)
         print(f"[*] Test Results: {test_results}")
 
         # save the test results in a json file for later reference
@@ -766,7 +816,6 @@ class AttackEmbeddings:
     def create_sets(self):
         """
         Configures DataLoaders for training, testing, and generalization.
-        Balances identity-based splitting and evaluation modes based on the baseline flag.
         """
 
         # DATASET CONFIGURATION LOGIC:
@@ -776,7 +825,7 @@ class AttackEmbeddings:
         self.val_dataloader = None
 
         # if baseline is not selected, is it neccesary
-        # to split data into train, test and generalization set
+        # to split data into train, validation and test sets.
         
         # 1. Part
         # every dataset folder has templestes and test folders
@@ -817,7 +866,7 @@ class AttackEmbeddings:
                                 ori_data_path=self.opts.db_path),
                 batch_size=self.opts.batch_size, shuffle=self.opts.train_shuffle, num_workers=self.opts.num_workers
             )
-            
+            # for validation we will use the templates identities, to evaluate the face recognition performance on the templates after each epoch of training
             identities_ttemplates = {tst.split('.')[0] for tst in identities_test if tst.split('_')[0] in identities_templates}
             self.val_dataloader = DataLoader(
                 WatermarkedDataset(self.opts.data_path, 
@@ -836,6 +885,8 @@ class AttackEmbeddings:
             )  
 
         if self.opts.baseline == True: 
+            # for the baseline we do not need a validation set, we will test directly on the second dataset, 
+            # so we will use all the identities of the first dataset for training
             self.train_dataloader = DataLoader(
                 WatermarkedDataset(self.opts.data_path, 
                                 self.opts.db_path, 
@@ -869,49 +920,87 @@ class AttackEmbeddings:
                 batch_size=self.opts.batch_size_test, shuffle=False, num_workers=self.opts.num_workers
             )  
         
-    def create_FR_sets(self):
+    def create_FR_sets(self, set_name='all'):
         """
         Creates DataLoaders for evaluating face recognition performance on both the training and testing datasets
         after the attack.
         """
-        self.face_loader_train = None
-        self.face_loader_test = None
+        if set_name == 'all':
+            print(f"[*] Creating DataLoaders for Face Recognition Evaluation on both Train and Test sets")
+            self.face_loader_train = None
+            self.face_loader_test = None
 
-        # Dataloaders for the face recognition evaluation part, we will use the templates of both datasets
-        self.face_loader_train = DataLoader(
-            FaceAttackedDataset(self.opts.data_path,
-                                (256, 256),  
-                                self.opts.dataset,
-                                self.opts.train_dataset,
-                                self.opts.wm_algorithm, 
-                                self.opts.experiment_name, 
-                                IMG_EXTENSION=self.opts.img_extension,
-                                max_images=self.opts.max_images_templates_train,
-                                ori_data_path=self.opts.db_path,
-                                set_name='train',
-                                experiment_dir=self.opts.exp_dir,
-                                experiment_name_attack=self.folder_struct,
-                                id_experiment_attack=self.id_number_exp,
-                                face_model_attacked=self.opts.facenet_mode,
-                                attacked_dataset=self.opts.dataset))
+            # Dataloaders for the face recognition evaluation part, we will use the templates of both datasets
+            self.face_loader_train = DataLoader(
+                FaceAttackedDataset(self.opts.data_path,
+                                    (256, 256),  
+                                    self.opts.dataset,
+                                    self.opts.train_dataset,
+                                    self.opts.wm_algorithm, 
+                                    self.opts.experiment_name, 
+                                    IMG_EXTENSION=self.opts.img_extension,
+                                    max_images=self.opts.max_images_templates_train,
+                                    ori_data_path=self.opts.db_path,
+                                    set_name='train',
+                                    experiment_dir=self.opts.exp_dir,
+                                    experiment_name_attack=self.folder_struct,
+                                    id_experiment_attack=self.id_number_exp,
+                                    face_model_attacked=self.opts.facenet_mode,
+                                    attacked_dataset=self.opts.dataset))
 
-        self.face_loader_test = DataLoader(
-            FaceAttackedDataset(self.opts.data_path,
-                                (256, 256),  
-                                self.opts.dataset_test,
-                                self.opts.train_dataset,
-                                self.opts.wm_algorithm, 
-                                self.opts.experiment_name, 
-                                IMG_EXTENSION=self.opts.img_extension,
-                                max_images=self.opts.max_images_templates_test,
-                                ori_data_path=self.opts.db_path,
-                                set_name='test',
-                                experiment_dir=self.opts.exp_dir,
-                                experiment_name_attack=self.folder_struct,
-                                id_experiment_attack=self.id_number_exp,
-                                face_model_attacked=self.opts.facenet_mode,
-                                attacked_dataset=self.opts.dataset))  
+            self.face_loader_test = DataLoader(
+                FaceAttackedDataset(self.opts.data_path,
+                                    (256, 256),  
+                                    self.opts.dataset_test,
+                                    self.opts.train_dataset,
+                                    self.opts.wm_algorithm, 
+                                    self.opts.experiment_name, 
+                                    IMG_EXTENSION=self.opts.img_extension,
+                                    max_images=self.opts.max_images_templates_test,
+                                    ori_data_path=self.opts.db_path,
+                                    set_name='test',
+                                    experiment_dir=self.opts.exp_dir,
+                                    experiment_name_attack=self.folder_struct,
+                                    id_experiment_attack=self.id_number_exp,
+                                    face_model_attacked=self.opts.facenet_mode,
+                                    attacked_dataset=self.opts.dataset))  
+        elif set_name == 'val':
+            print(f"[*] Creating DataLoader for Face Recognition Evaluation on the Validation set")
+            self.face_loader_train = DataLoader(
+                FaceAttackedDataset(self.opts.data_path,
+                                    (256, 256),  
+                                    self.opts.dataset,
+                                    self.opts.train_dataset,
+                                    self.opts.wm_algorithm, 
+                                    self.opts.experiment_name, 
+                                    IMG_EXTENSION=self.opts.img_extension,
+                                    max_images=self.opts.max_images_templates_train,
+                                    ori_data_path=self.opts.db_path,
+                                    set_name='train',
+                                    experiment_dir=self.opts.exp_dir,
+                                    experiment_name_attack=self.folder_struct,
+                                    id_experiment_attack=self.id_number_exp,
+                                    face_model_attacked=self.opts.facenet_mode,
+                                    attacked_dataset=self.opts.dataset))
 
+        elif set_name == 'test':
+            print(f"[*] Creating DataLoader for Face Recognition Evaluation on the Test set")
+            self.face_loader_test = DataLoader(
+                FaceAttackedDataset(self.opts.data_path,
+                                    (256, 256),  
+                                    self.opts.dataset_test,
+                                    self.opts.train_dataset,
+                                    self.opts.wm_algorithm, 
+                                    self.opts.experiment_name, 
+                                    IMG_EXTENSION=self.opts.img_extension,
+                                    max_images=self.opts.max_images_templates_test,
+                                    ori_data_path=self.opts.db_path,
+                                    set_name='test',
+                                    experiment_dir=self.opts.exp_dir,
+                                    experiment_name_attack=self.folder_struct,
+                                    id_experiment_attack=self.id_number_exp,
+                                    face_model_attacked=self.opts.facenet_mode,
+                                    attacked_dataset=self.opts.dataset_test))
 
 def main():
     # loading the parameters
@@ -938,7 +1027,8 @@ def main():
 
     if opts.baseline == False:  # pipeline way
         attack.training() # training and validation
-        attack.testing('test_results.json') # testing generalization on the second dataset
+        attack.testing('test_results.json', tag='generalization') # testing generalization on the second dataset
+        attack.run_eval_face_recognition('face_recognition_results.json')
     else: # baseline way    
         attack.training() # run "train" on the first dataset and testing on the second one
         # At the end we evaluate the face recognition performance
