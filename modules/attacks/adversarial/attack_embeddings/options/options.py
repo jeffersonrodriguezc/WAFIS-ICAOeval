@@ -14,14 +14,14 @@ class InjectionOptions:
         # Parámetros del Ataque (PGD en Embedding)
         self.parser.add_argument('--pgd_steps', default=80, type=int)
         self.parser.add_argument('--log_inner_steps', default=True, type=bool)
-        self.parser.add_argument('--epsilon', default=0.5, type=float, help="Constraint value for delta")
-        self.parser.add_argument('--step_size', default=0.005, type=float)
+        self.parser.add_argument('--epsilon', default=2, type=float, help="Constraint value for delta")
+        self.parser.add_argument('--step_size', default=0.03125, type=float)
         self.parser.add_argument('--epochs', default=5, type=int)
         self.parser.add_argument('--baseline', default=False, type=bool, help="If true, runs baseline")
         
         # Pesos de Pérdida
-        self.parser.add_argument('--adv_weight', default=50.0, type=float, help="Weight for evasion")
-        self.parser.add_argument('--rec_weight', default=8.0, type=float, help="Weight to preserve watermark/visuals")
+        self.parser.add_argument('--adv_weight', default=40.0, type=float, help="Weight for evasion")
+        self.parser.add_argument('--rec_weight', default=10.0, type=float, help="Weight to preserve watermark/visuals")
         self.parser.add_argument('--lpips_weight', default=5.0, type=float)
         self.parser.add_argument('--mse_weight', default=1.0, type=float)
         self.parser.add_argument('--recloss_mode', default='combined', choices=['l2', 'lpips', 'combined'])
@@ -42,7 +42,7 @@ class InjectionOptions:
         self.parser.add_argument('--use_fusion_module', default=True, type=bool, help="Whether to include the fusion module in the attack pipeline")
         self.parser.add_argument('--use_weight_mask', default=True, type=bool, help="Whether to include the weight mask in the attack pipeline")
         self.parser.add_argument('--lr_fusion', default=1e-4, type=float)
-        self.parser.add_argument('--restore_training', default=True, type=bool, help="Whether to restore the training from a checkpoint")
+        self.parser.add_argument('--restore_training', default=False, type=bool, help="Whether to restore the training from a checkpoint")
         
         # Dataset Test (Generalización)
         self.parser.add_argument('--dataset_test', default='facelab_london', type=str)

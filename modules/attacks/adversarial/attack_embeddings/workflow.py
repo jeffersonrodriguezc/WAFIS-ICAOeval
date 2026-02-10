@@ -29,6 +29,8 @@ class AttackEmbeddings:
         self.device = torch.device(opts.device)
         self.global_step = 0
         self.start_epoch = 0
+        self.inner_step_count = 0
+        self.val_step_count = 0
         self.best_global_loss = float('inf')  
         self._set_seeds()
         
@@ -84,7 +86,9 @@ class AttackEmbeddings:
 
         # save all the parameters of the experiment in a json file for later reference
         if self.opts.restore_training == False:
-            self.save_params_to_json()     
+            self.save_params_to_json() 
+        else:
+            self.load_params_from_json()    
 
         print("[*] Initializing Networks...") 
         # Face Recognition is always needed!
@@ -136,7 +140,8 @@ class AttackEmbeddings:
         self.adv_loss = AdvLoss(opts.adv_weight, self.device, mode='evasion')
         self.cal_psnr = PeakSignalNoiseRatio().to(self.device)
         self.cal_ssim = StructuralSimilarityIndexMeasure().to(self.device)
-        self.writer = SummaryWriter(log_dir=self.logs_dir, purge_step=self.global_step if self.opts.restore_training else None)
+        self.writer = SummaryWriter(log_dir=self.logs_dir,
+                                    purge_step=self.global_step if self.opts.restore_training else None)
 
         # create datasets and dataloaders
         print("[*] Preparing Datasets and Dataloaders...")
@@ -149,6 +154,8 @@ class AttackEmbeddings:
         state = {
                     'epoch': epoch,
                     'global_step': self.global_step,
+                    'inner_step_count': self.inner_step_count,
+                    'val_step_count': self.val_step_count,
                     'model_state': self.fusion_net.state_dict(),
                     'optimizer_state': self.optimizer_fusion.state_dict(),
                     'scheduler_state': self.scheduler.state_dict(),
@@ -183,6 +190,8 @@ class AttackEmbeddings:
             # Restaurar estado del entrenamiento
             self.start_epoch = checkpoint['epoch']
             self.global_step = checkpoint['global_step']
+            self.inner_step_count = checkpoint.get('inner_step_count', 0)
+            self.val_step_count = checkpoint.get('val_step_count', 0)
             self.best_global_loss = checkpoint.get('best_loss', float('inf'))
             
             print(f"[*] Resumed at Epoch {self.start_epoch}, Step {self.global_step}, Best Loss {self.best_global_loss:.4f}")
@@ -576,8 +585,8 @@ class AttackEmbeddings:
         else:
             step_count = 0
             start_epoch = 0
+
         update_weights = False
-        self.inner_step_count = 0
         best_global_loss_avg = float('inf')
         tag_new = None
             
@@ -596,6 +605,8 @@ class AttackEmbeddings:
             if self.opts.baseline == False:  # pipeline way
                 loader = self.val_dataloader
                 tag_new = 'val'
+                update_weights = False
+                
             else:
                 loader = self.test_dataloader
                 tag_new = 'test'
@@ -645,8 +656,12 @@ class AttackEmbeddings:
                     if (self.global_step % 50 == 0) or is_best:
                         self._save_checkpoint(epoch, loss, is_best=is_best)
                 else:
-                    step_count += 1
-                    current_log_step = step_count
+                    if tag_new == 'val':
+                        self.val_step_count += 1
+                        current_log_step = self.val_step_count
+                    else:
+                        step_count += 1
+                        current_log_step = step_count
 
                 # Compute metrics and log results after the attack for the current batch
                 with torch.no_grad():
@@ -767,6 +782,26 @@ class AttackEmbeddings:
             
         except Exception as e:
             print(f"[!] Error saving hyperparameters JSON: {e}")
+
+    def load_params_from_json(self):
+        """
+        Load hyperparameters and settings from a JSON file and update the current experiment's options.
+        This is useful for resuming experiments or ensuring consistency across runs.
+        """
+        load_path = os.path.join(self.output_to_save, self.folder_struct, 
+                                 self.id_number_exp, 'hyperparameters.json')
+        try:
+            with open(load_path, 'r') as f:
+                params_dict = json.load(f)
+            
+            # Update the current options with the loaded parameters
+            for key, value in params_dict.items():
+                setattr(self.opts, key, value)
+                    
+            print(f"[*] Hyperparameters loaded from {load_path}")
+            
+        except Exception as e:
+            print(f"[!] Error loading hyperparameters JSON: {e}")
 
     def get_bit_accuracy_rate(self,
         msg: torch.Tensor,
