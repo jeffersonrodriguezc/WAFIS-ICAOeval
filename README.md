@@ -1,4 +1,4 @@
-# Guideline to read the repo (Branch adversarial-attacl-poc)
+# Guideline to read the repo (Branch adversarial-attack-poc)
 
 ## 1) Repository Structure:
 ```text
