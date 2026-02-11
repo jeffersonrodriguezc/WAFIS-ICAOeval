@@ -42,7 +42,7 @@ class InjectionOptions:
         self.parser.add_argument('--use_fusion_module', default=True, type=bool, help="Whether to include the fusion module in the attack pipeline")
         self.parser.add_argument('--use_weight_mask', default=True, type=bool, help="Whether to include the weight mask in the attack pipeline")
         self.parser.add_argument('--lr_fusion', default=1e-4, type=float)
-        self.parser.add_argument('--restore_training', default=False, type=bool, help="Whether to restore the training from a checkpoint")
+        self.parser.add_argument('--restore_training', default=True, type=bool, help="Whether to restore the training from a checkpoint")
         
         # Dataset Test (Generalización)
         self.parser.add_argument('--dataset_test', default='facelab_london', type=str)

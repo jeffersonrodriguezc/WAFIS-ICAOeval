@@ -1,3 +1,4 @@
+from fileinput import filename
 import os
 import numpy as np
 import torch
@@ -171,32 +172,34 @@ class AttackEmbeddings:
             torch.save(state, best_path)
             #print(f"[*] New Best Model Saved! Loss: {loss:.4f}")
 
-    def _load_checkpoint(self):
+    def _load_checkpoint(self, best=False):
         """
         This function loads the last checkpoint if it exists, allowing the training to resume from where it left off.
         """
-        load_path = os.path.join(self.ckpt_dir, 'last_checkpoint.pth')
+        filename = 'best_checkpoint.pth' if best else 'last_checkpoint.pth'
+        load_path = os.path.join(self.ckpt_dir, filename)
         if os.path.exists(load_path):
-            print(f"[*] Resuming training from {load_path}")
-            checkpoint = torch.load(load_path, map_location=self.device)
-            
-            # Cargar pesos del modelo y optimizador
-            self.fusion_net.load_state_dict(checkpoint['model_state'])
-            self.optimizer_fusion.load_state_dict(checkpoint['optimizer_state'])
+                tag_msg = "BEST" if best else "LAST"
+                print(f"[*] Loading {tag_msg} checkpoint from {load_path}")
+                checkpoint = torch.load(load_path, map_location=self.device)
+                
+                # Load model and optimizer state
+                self.fusion_net.load_state_dict(checkpoint['model_state'])
+                self.optimizer_fusion.load_state_dict(checkpoint['optimizer_state'])
 
-            if 'scheduler_state' in checkpoint:
-                self.scheduler.load_state_dict(checkpoint['scheduler_state'])
+                if 'scheduler_state' in checkpoint:
+                    self.scheduler.load_state_dict(checkpoint['scheduler_state'])
 
-            # Restaurar estado del entrenamiento
-            self.start_epoch = checkpoint['epoch']
-            self.global_step = checkpoint['global_step']
-            self.inner_step_count = checkpoint.get('inner_step_count', 0)
-            self.val_step_count = checkpoint.get('val_step_count', 0)
-            self.best_global_loss = checkpoint.get('best_loss', float('inf'))
-            
-            print(f"[*] Resumed at Epoch {self.start_epoch}, Step {self.global_step}, Best Loss {self.best_global_loss:.4f}")
+                # Restore training progress
+                self.start_epoch = checkpoint['epoch']
+                self.global_step = checkpoint['global_step']
+                self.inner_step_count = checkpoint.get('inner_step_count', 0)
+                self.val_step_count = checkpoint.get('val_step_count', 0)
+                self.best_global_loss = checkpoint.get('best_loss', float('inf'))
+                
+                print(f"[*] Resumed at Epoch {self.start_epoch}, Best Loss {self.best_global_loss:.4f}")
         else:
-            print("[*] No checkpoint found. Starting training from scratch.")
+            print(f"[*] No checkpoint found at {load_path}. Skipping load.")
 
     def _set_seeds(self):
         torch.manual_seed(self.opts.seed)
@@ -829,6 +832,12 @@ class AttackEmbeddings:
                                  self.id_number_exp, 'train_results.json')
         with open(train_results_path, 'w') as f:
             json.dump(train_results, f, indent=4)
+
+        if not self.opts.baseline and self.opts.use_fusion_module:
+            print("\n" + "="*50)
+            print("[*] Training finished. Loading BEST checkpoint for testing...")
+            self._load_checkpoint(best=True)
+            print("="*50 + "\n")
 
         # run the testing evaluation
         # for baseline it is the second dataset
