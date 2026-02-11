@@ -124,7 +124,7 @@ class AttackEmbeddings:
                 
                 # Load checkpoint if exists for fusion module
                 print("[*] Checking for existing checkpoints for the fusion module...")
-                self._load_checkpoint()
+                self._load_checkpoint(best=False)  # Load last checkpoint if exists, to resume training of the fusion module
 
                 # Freeze the base modules (AAD and Attribute Encoder)
                 # Here the only network that we could fine tune is the AAD network!
@@ -570,7 +570,7 @@ class AttackEmbeddings:
             results[set_name] = {"acc_wm": acc_original, "asr": asr, "acc_attacked":acc_attacked,
                                   "avg_sim_wm": avg_sim_wm, "std_sim_wm": std_sim_wm, "avg_sim_attacked": avg_sim_attacked, "std_sim_attacked": std_sim_attacked}
         # save the results in a json file
-        with open(os.path.join(self.output_to_save, self.folder_struct, self.id_number_exp, f'ep{epoch + 1}_{filename_results}'), 'w') as f:
+        with open(os.path.join(self.output_to_save, self.folder_struct, self.id_number_exp, f'{set_name}_ep{epoch}_{filename_results}'), 'w') as f:
             json.dump(results, f, indent=4)
                     
     def run_attack(self, tag):
@@ -604,6 +604,7 @@ class AttackEmbeddings:
                 if start_epoch >= epochs:
                     print("[*] Training already completed according to checkpoint.")
                     return {}
+                
         if tag == 'test':
             if self.opts.baseline == False:  # pipeline way
                 loader = self.val_dataloader
@@ -741,7 +742,9 @@ class AttackEmbeddings:
             if self.opts.baseline == False and tag_new == 'train': # only for pipeline way,
                 # after each epoch of training we evaluate the face recognition performance on the validation set
                 self.testing(f'val_results_{epoch + 1}.json')
-                self.run_eval_face_recognition(epoch=epoch + 1, set_name=tag_new) 
+                self.testing(f'test_results_{epoch + 1}.json', tag='generalization') # testing generalization on the second dataset
+                self.run_eval_face_recognition(epoch=epoch + 1, set_name='val') 
+                self.run_eval_face_recognition(epoch=epoch + 1, set_name='test') 
 
         return best_average_results # Return the best average results
 
@@ -829,15 +832,9 @@ class AttackEmbeddings:
 
         # save the best results in a json file for later reference
         train_results_path = os.path.join(self.output_to_save, self.folder_struct, 
-                                 self.id_number_exp, 'train_results.json')
+                                 self.id_number_exp, 'train_results_last_epoch.json')
         with open(train_results_path, 'w') as f:
             json.dump(train_results, f, indent=4)
-
-        if not self.opts.baseline and self.opts.use_fusion_module:
-            print("\n" + "="*50)
-            print("[*] Training finished. Loading BEST checkpoint for testing...")
-            self._load_checkpoint(best=True)
-            print("="*50 + "\n")
 
         # run the testing evaluation
         # for baseline it is the second dataset
@@ -1042,7 +1039,7 @@ class AttackEmbeddings:
                                     experiment_name_attack=self.folder_struct,
                                     id_experiment_attack=self.id_number_exp,
                                     face_model_attacked=self.opts.facenet_mode,
-                                    attacked_dataset=self.opts.dataset_test))
+                                    attacked_dataset=self.opts.dataset))
 
 def main():
     # loading the parameters
@@ -1068,9 +1065,8 @@ def main():
     attack = AttackEmbeddings(opts, wm_model_args)
 
     if opts.baseline == False:  # pipeline way
-        attack.training() # training and validation
-        attack.testing('test_results.json', tag='generalization') # testing generalization on the second dataset
-        attack.run_eval_face_recognition('face_recognition_results.json')
+        attack.training() # training, validation and testing
+        
     else: # baseline way    
         attack.training() # run "train" on the first dataset and testing on the second one
         # At the end we evaluate the face recognition performance
