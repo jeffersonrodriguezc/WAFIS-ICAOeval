@@ -1,6 +1,7 @@
 from torch.nn import Linear, Conv2d, BatchNorm1d, BatchNorm2d, PReLU, ReLU, Sigmoid, Dropout2d, Dropout, AvgPool2d, MaxPool2d, AdaptiveAvgPool2d, Sequential, Module, Parameter
 import torch.nn.functional as F
 import torch
+from facenet_pytorch import InceptionResnetV1
 from collections import namedtuple
 import math
 import pdb
@@ -107,6 +108,11 @@ def get_blocks(num_layers):
     else:
         raise ValueError("Invalid number of layers: {}. Must be one of [50, 100, 152]".format(num_layers))
     return blocks
+
+def Backbone_facenet(pretrained=None):
+    model = InceptionResnetV1(pretrained=pretrained)
+
+    return model
 
 class Backbone(Module):
     #def __init__(self, num_layers, drop_ratio, mode='ir'):

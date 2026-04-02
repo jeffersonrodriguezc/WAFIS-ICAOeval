@@ -6,8 +6,8 @@ COPY . .
 
 RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --upgrade pip setuptools wheel
-
+RUN pip install --upgrade pip "setuptools<70" wheel
 RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install facenet-pytorch --no-deps
 
 CMD []

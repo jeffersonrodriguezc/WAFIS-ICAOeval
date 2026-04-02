@@ -1,21 +1,25 @@
 from fileinput import filename
 import os
 import numpy as np
+
 import torch
+import torchvision
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 import json
 
 from dataset import WatermarkedDataset, FaceAttackedDataset
 from options.options import InjectionOptions
-from utils import l2_norm, alignment, tensor2img, pgd_step, l2_project, pgd_step_linf, linf_project
+from utils import l2_norm, alignment, tensor2img, pgd_step, l2_project, pgd_step_linf, linf_project, pgd_step_linf_masked
+from utils import generate_background_mask, compute_sobel_edges_mask
 from network.AAD import AADGenerator, FusionModule, get_spatial_weights_gauss
 from network.MAE import MLAttrEncoder
-from network.face_modules import Backbone
+from network.face_modules import Backbone, Backbone_facenet
 from criteria.loss_functions import RecLoss, AdvLoss
 from torch.utils.tensorboard import SummaryWriter
 from torchmetrics import PeakSignalNoiseRatio, StructuralSimilarityIndexMeasure
 from torch.optim.lr_scheduler import ExponentialLR
+from facenet_pytorch import fixed_image_standardization
 
 from watermarking.StegFormer.utils import get_message_accuracy 
 from watermarking.StegFormer.utils import load_weights_decoder as load_weights_StegFormer
@@ -76,25 +80,39 @@ class AttackEmbeddings:
                 #os.makedirs(self.records_dir, exist_ok=True)
                 os.makedirs(os.path.join(self.imgout_dir, 'train'), exist_ok=True)
                 os.makedirs(os.path.join(self.imgout_dir, 'test'), exist_ok=True)
-                if self.opts.baseline == False:
-                    os.makedirs(os.path.join(self.imgout_dir, 'val'), exist_ok=True)
+                os.makedirs(os.path.join(self.imgout_dir, 'val'), exist_ok=True)
             elif self.opts.restore_training == True and self.opts.baseline == False and self.opts.use_fusion_module == True:
                 self.id_number_exp = str(last_id_exp)
                 self.imgout_dir = os.path.join(self.output_to_save, self.folder_struct, self.id_number_exp, 'attacked_samples')
                 #self.records_dir = os.path.join(self.output_to_save, self.folder_struct, self.id_number_exp, 'attack_records')
                 self.logs_dir = os.path.join(self.output_to_save, self.folder_struct, self.id_number_exp, 'logs')
-                self.ckpt_dir = os.path.join(self.output_to_save, self.folder_struct, self.id_number_exp, 'checkpoints')
+                self.ckpt_dir = os.path.join(self.output_to_save, self.folder_struct, self.id_number_exp, 'checkpoints')            
+            elif self.opts.baseline == True and self.opts.only_face_recognition_evaluation == False:
+                self.id_number_exp = str(int(last_id_exp) + 1)
+                self.imgout_dir = os.path.join(self.output_to_save, self.folder_struct, self.id_number_exp, 'attacked_samples')
+                self.logs_dir = os.path.join(self.output_to_save, self.folder_struct, self.id_number_exp, 'logs')
+                # create folders
+                os.makedirs(self.imgout_dir, exist_ok=True)
+                os.makedirs(self.logs_dir, exist_ok=True)
+                #os.makedirs(self.records_dir, exist_ok=True)
+                os.makedirs(os.path.join(self.imgout_dir, 'train'), exist_ok=True)
+                os.makedirs(os.path.join(self.imgout_dir, 'test'), exist_ok=True)
+            elif self.opts.baseline == True and self.opts.only_face_recognition_evaluation == True:
+                self.id_number_exp = str(self.opts.id_number_exp)
+                self.imgout_dir = os.path.join(self.output_to_save, self.folder_struct, self.id_number_exp, 'attacked_samples')
 
         # save all the parameters of the experiment in a json file for later reference
-        if self.opts.restore_training == False:
+        if self.opts.restore_training == False or self.opts.only_face_recognition_evaluation == True:
             self.save_params_to_json() 
         else:
             self.load_params_from_json()    
 
         print("[*] Initializing Networks...") 
         # Face Recognition is always needed!
-        print(f"[*] 1. FaceNet Model ({opts.facenet_mode}) from {opts.facenet_dir}")
-        self.facenet = self._load_facenet().to(self.device).eval()
+        print(f"[*] 1a. FaceNet Model ({opts.facenet_mode}) from {opts.facenet_dir}")
+        print(f"[*] 1b. FaceNet Model for test ({opts.facenet_mode_test})")
+        self.facenet = self._load_facenet(self.opts.facenet_mode, self.opts.facenet_dir).to(self.device).eval()
+        self.facenet_test = self._load_facenet(self.opts.facenet_mode_test, None).to(self.device).eval()
 
         # Watermark Decoder (Black Box) is always needed to compute extraction metrics
         print(f"[*] 2. Watermark Decoder ({opts.wm_algorithm})") 
@@ -131,17 +149,26 @@ class AttackEmbeddings:
                 for m in [self.aadblocks, self.attencoder]:
                     for p in m.parameters(): p.requires_grad = False
 
+        # load the model to remove the background
+        print(f"[*] 6. Background Removal Model (DeepLabV3 ResNet101 pretrained on COCO)")
+        self.model_bga_seg = torchvision.models.segmentation.deeplabv3_resnet101(pretrained=True)
+        self.model_bga_seg.to(self.device)
+        self.model_bga_seg.eval()
+
         # Freeze the FaceNet and Watermark Decoder
-        for m in [self.facenet, self.wm_decoder]:
+        for m in [self.facenet, self.facenet_test, self.wm_decoder]:
             for p in m.parameters(): p.requires_grad = False
 
-        print("[*] 6. Loss functions and metrics...")
+        print("[*] 7. Loss functions and metrics...")
         # loss functions and metrics
         self.rec_loss = RecLoss(opts.rec_weight, opts.recloss_mode, self.device, opts.mse_weight, opts.lpips_weight)
         self.adv_loss = AdvLoss(opts.adv_weight, self.device, mode='evasion')
         self.cal_psnr = PeakSignalNoiseRatio().to(self.device)
         self.cal_ssim = StructuralSimilarityIndexMeasure().to(self.device)
-        self.writer = SummaryWriter(log_dir=self.logs_dir,
+        
+        if self.opts.only_face_recognition_evaluation == False:
+            print("[*] 8. Tensorboard Writer...")
+            self.writer = SummaryWriter(log_dir=self.logs_dir,
                                     purge_step=self.global_step if self.opts.restore_training else None)
 
         # create datasets and dataloaders
@@ -206,11 +233,13 @@ class AttackEmbeddings:
         np.random.seed(self.opts.seed)
         torch.cuda.manual_seed_all(self.opts.seed)
 
-    def _load_facenet(self):
+    def _load_facenet(self, facenet_mode=None, facenet_dir=None):
         # Simplificación de carga basada en tu script original
-        if self.opts.facenet_mode == 'arcface':
+        if facenet_mode == 'arcface':
             net = Backbone(input_size=112, num_layers=50, drop_ratio=0.6, mode='ir_se')
-            net.load_state_dict(torch.load(self.opts.facenet_dir, map_location=self.device))
+            net.load_state_dict(torch.load(facenet_dir, map_location=self.device))
+        elif facenet_mode == 'facenet':
+            net = Backbone_facenet(pretrained="vggface2").to(self.device)
         return net
     
     def _load_wm_decoder(self, args, wm_args):
@@ -470,6 +499,96 @@ class AttackEmbeddings:
         else:
             return best_attack
 
+    def attack_batch_baseline_linf_masked(self, img_wm, tag):
+        """
+        Baseline attack: PGD directly in the pixel space with L-infinity constraint, without using the AAD network or the fusion module.
+        """
+        # 1. Get the original embedding as reference (zid) before the attack
+        with torch.no_grad():
+            img_org_aligned = alignment(img_wm) # resize to 112x112 for ARCface
+            img_org_for_net = (img_org_aligned - 0.5) / 0.5 # ARCFace normalization
+            zid = l2_norm(self.facenet(img_org_for_net)).detach() # Normakization to facilitate the project step of the PGD
+
+        # 2. Initialize delta (perturbation in the pixel space)
+        #delta_img = torch.zeros_like(img_wm).to(self.device)
+        delta_img = torch.zeros_like(img_wm).uniform_(-self.opts.epsilon, self.opts.epsilon).to(self.device)
+        delta_img.requires_grad = True # To be able to compute gradients with respect to the perturbation in the pixel space
+
+        best_attack = None
+        best_loss = float('inf')
+
+        # compute the masks for the masked PGD attack
+        rbag_mask = generate_background_mask(self.model_bga_seg, img_wm) 
+        mask_edges = compute_sobel_edges_mask(img_wm, threshold=0.5) 
+
+        # Compound binary mask: [B, C, H, W]
+        # 1 = Attack, face and low frequences | 0 = Don't attack, background and high frequencies (edges)
+        final_mask =  rbag_mask * (1 - mask_edges)
+        final_mask = final_mask.to(self.device)
+
+        # Loop PGD
+        for i in range(self.opts.pgd_steps):
+            delta_masked = delta_img * final_mask 
+            # Generate the adversarial image by adding the perturbation to the original watermarked image
+            x_adv = torch.clamp(img_wm + delta_masked, 0, 1)
+
+            # 3. Extract embedding of the perturbed image to compute loss
+            x_adv_aligned = alignment(x_adv) # resize to 112x112 for ARCface
+            x_adv_for_net = (x_adv_aligned - 0.5) / 0.5 # ARCFace normalization
+            zadv = l2_norm(self.facenet(x_adv_for_net)) # Normakization to facilitate the project step of the PGD
+
+            # 4. Compute losses
+            # we want to minimize the similarity between the adversarial embedding and the original one (maximize the distance)
+            ladv = self.adv_loss(zadv, zid)
+            # we want to preserve the watermark and the visual quality of the image,
+            lrec = self.rec_loss(x_adv, img_wm)
+            loss = ladv +  lrec # final loss to minimize
+
+            # 5. Backpropagation and PGD step
+            if delta_img.grad is not None: delta_img.grad.zero_()
+            loss.backward()
+
+            # 6. PGD L-infinity step and Projection
+            with torch.no_grad(): 
+                # Update delta_img with PGD step and projection in the L-infinity ball
+                delta_img.copy_(pgd_step_linf_masked(delta_img, delta_img.grad, self.opts.step_size, final_mask))
+                delta_img.copy_(linf_project(delta_img, self.opts.epsilon))
+                delta_img.copy_(delta_img * final_mask)
+
+            if self.opts.log_inner_steps and i % 10 == 0:
+                 evident_perturbation = torch.abs(delta_img[0]) / self.opts.epsilon
+                 self.writer.add_image(f"{tag}/Perturbation", evident_perturbation, self.inner_step_count)
+
+            if self.opts.log_inner_steps:  
+                self.writer.add_scalar(f"{tag}/PGD/loss", loss.item(), self.inner_step_count)
+                self.writer.add_scalar(f"{tag}/PGD/adv_loss", ladv.item(), self.inner_step_count)
+                self.writer.add_scalar(f"{tag}/PGD/rec_loss", lrec.item(), self.inner_step_count)
+                self.writer.add_scalar(f"{tag}/PGD/delta_l2", torch.norm(delta_img.detach(), dim=1).mean().item(), self.inner_step_count)
+            
+            self.inner_step_count += 1
+
+            if loss.item() < best_loss:
+                best_loss = loss.item()
+                best_attack = (x_adv.detach(), zid.detach(), zadv.detach(), delta_img.clone().detach(), 
+                               loss.item(), ladv.item(), lrec.item())
+
+        # After finishing we compute the final attack with the last delta_img obtained, 
+        # to compare it with the best attack obtained in the inner loop of the PGD        
+        with torch.no_grad():
+            delta_masked = delta_img * final_mask
+            x_adv = torch.clamp(img_wm + delta_masked, 0, 1)
+            zadv = l2_norm(self.facenet((alignment(x_adv) - 0.5) / 0.5))
+            self.ladv = self.adv_loss(zadv, zid)
+            self.lrec = self.rec_loss(x_adv, img_wm) 
+            loss = self.ladv + self.lrec
+        
+        final_attack = (x_adv.detach(), zid.detach(), zadv.detach(), delta_masked.detach(), loss.item(), self.ladv.item(), self.lrec.item())
+        
+        if final_attack[4] < best_loss:
+            return final_attack
+        else:
+            return best_attack
+
     def run_eval_face_recognition(self, filename_results="face_recognition_results.json", epoch=0, set_name='all'):
         """
         Evaluate the face recognition performance on the watermarked and attacked images.
@@ -509,22 +628,35 @@ class AttackEmbeddings:
                 template_img = template_img.to(self.device)
                 attacked_img = attacked_img.to(self.device)
 
+                # Check range [-1, 1]
+                assert template_img.min() >= 0.0 and template_img.max() <= 1.0, f"Invalid range: [{template_img.min():.2f}, {template_img.max():.2f}]"
+                assert attacked_img.min() >= 0.0 and attacked_img.max() <= 1.0, f"Invalid range: [{attacked_img.min():.2f}, {attacked_img.max():.2f}]"
+                assert wm_img.min() >= 0.0 and wm_img.max() <= 1.0, f"Invalid range: [{wm_img.min():.2f}, {wm_img.max():.2f}]"
+
                 # Get the embeddings for the original image and the attacked image
                 with torch.no_grad():
-                    # Transform the original template image ## ARCFACE preprocessing
-                    template_aligned = alignment(template_img)
+
+                    if self.opts.facenet_mode_test == 'arcface':
+                        # resize the images to 112x112 and align them for the FaceNet model
+                        template_aligned = alignment(template_img, size=(112, 112))
+                        img_attacked_aligned = alignment(attacked_img, size=(112, 112))
+                        img_wm_aligned = alignment(wm_img, size=(112, 112))
+
+                    elif self.opts.facenet_mode_test == 'facenet':
+                        # resize the images to 160x160 and align them for the FaceNet model
+                        template_aligned = alignment(template_img, size=(160, 160))
+                        img_attacked_aligned = alignment(attacked_img, size=(160, 160))
+                        img_wm_aligned = alignment(wm_img, size=(160, 160))
+
+                    # based on the fact that the imagea are normalized to [0, 1].
+                    # Is needed to normalize them to the range [-1,1]
                     template_for_net = (template_aligned - 0.5) / 0.5
-                    zid_template = l2_norm(self.facenet(template_for_net)).detach() # facial vector for the template
-
-                    # Transform the attacked image ## ARCFACE preprocessing
-                    img_attacked_aligned = alignment(attacked_img)
                     img_attacked_for_net = (img_attacked_aligned - 0.5) / 0.5
-                    zadv_attacked = l2_norm(self.facenet(img_attacked_for_net)).detach() # facial vector for the attacked image
-
-                    # Transform the original image (watermarked) ## ARCFACE preprocessing
-                    img_wm_aligned = alignment(wm_img)
                     img_wm_for_net = (img_wm_aligned - 0.5) / 0.5
-                    zid_wm = l2_norm(self.facenet(img_wm_for_net)).detach() # facial vector for the watermarked image
+                    
+                    zid_template = l2_norm(self.facenet_test(template_for_net)).detach() # facial vector for the template
+                    zadv_attacked = l2_norm(self.facenet_test(img_attacked_for_net)).detach() # facial vector for the attacked image
+                    zid_wm = l2_norm(self.facenet_test(img_wm_for_net)).detach() # facial vector for the watermarked image
 
                     # compute cosine similarity between the template and the watermarked image before the attack,
                     #  and between the template and the attacked image
@@ -644,7 +776,7 @@ class AttackEmbeddings:
 
                 # Run the corresponding attack for the batch
                 if self.opts.baseline == True: # we attack directly the watermarked images with a pixel-based attack (L-infinity)
-                    imgs_adv, zid, zadv, delta, loss, ladv, lrec = self.attack_batch_baseline_linf(imgs_wm, tag=tag_new)
+                    imgs_adv, zid, zadv, delta, loss, ladv, lrec = self.attack_batch_baseline_linf_masked(imgs_wm, tag=tag_new)
                 else: # we attack the embeddings with the complete pipeline (AAD + Fusion)
                     imgs_adv, zid, zadv, delta, loss, ladv, lrec= self.attack_batch_pipeline(imgs_wm, tag=tag_new, update_weights=update_weights)
                 
@@ -1068,9 +1200,12 @@ def main():
         attack.training() # training, validation and testing
         
     else: # baseline way    
-        attack.training() # run "train" on the first dataset and testing on the second one
-        # At the end we evaluate the face recognition performance
-        attack.run_eval_face_recognition('face_recognition_results.json')
+        if opts.only_face_recognition_evaluation:
+            attack.run_eval_face_recognition('face_recognition_results_onlyfr.json')
+        else:
+            attack.training() # run "train" on the first dataset and testing on the second one
+            # At the end we evaluate the face recognition performance
+            attack.run_eval_face_recognition('face_recognition_results.json')
 
 
 if __name__ == '__main__':

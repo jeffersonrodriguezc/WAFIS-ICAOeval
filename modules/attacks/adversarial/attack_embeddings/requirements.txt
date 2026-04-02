@@ -58,3 +58,4 @@ matplotlib >= 3
 optuna
 python-dateutil
 secml
+setuptools==69.5.1
