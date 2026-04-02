@@ -246,7 +246,7 @@ class FaceNetRecognizer:
         self.device = torch.device(device)
         print(f"Initializing FaceNetRecognizer on device: {self.device}")
         # model
-        self.model = InceptionResnetV1(pretrained='vggface2').eval().to(self.device)
+        self.model = InceptionResnetV1(pretrained='vggface2', classify=False).eval().to(self.device)
         # path to save visualization images
         self.save_images_path = save_images_path
         # for online and offline tests
@@ -255,10 +255,10 @@ class FaceNetRecognizer:
         # MTCNN for face detection and alignment in the wild
         if use_mtcnn: 
             if image_format == 'png':
-                self.mtcnn = MTCNN(keep_all=False, device=self.device)
+                self.mtcnn = MTCNN(keep_all=False, device=self.device, post_process=True)  # post_process False to keep [0,255] range
             else:
                 mtcnn_mod.extract_face = _extract_face_float
-                self.mtcnn = mtcnn_mod.MTCNN(keep_all=False, device=self.device)
+                self.mtcnn = mtcnn_mod.MTCNN(keep_all=False, device=self.device, post_process=True)  # post_process False to keep [0,255] range
 
     def get_embedding(self, image, debug_img: bool = False) -> Union[torch.Tensor, None]:
         """
@@ -323,16 +323,16 @@ class FaceNetRecognizer:
             raise ValueError("Embeddings must have the same shape.")
         
         # Calculate the distance
+        emb1_norm = emb1 / emb1.norm(p=2, dim=0, keepdim=True)
+        emb2_norm = emb2 / emb2.norm(p=2, dim=0, keepdim=True)
         if metric == 'cosine':
             # Cosine distance
-            emb1_norm = emb1 / emb1.norm(p=2, dim=0, keepdim=True)
-            emb2_norm = emb2 / emb2.norm(p=2, dim=0, keepdim=True)
             #cosine_similarity = F.cosine_similarity(emb1.unsqueeze(0), emb2.unsqueeze(0), dim=0)
             cosine_similarity = torch.dot(emb1_norm, emb2_norm).item()
             distance = 1 - cosine_similarity
         elif metric == 'euclidean':
             # Euclidean distance
-            distance = torch.norm(emb1 - emb2).item()
+            distance = torch.norm(emb1_norm - emb2_norm).item()
         else:
             raise ValueError("Unsupported metric. Use 'euclidean' or 'cosine'.")
         

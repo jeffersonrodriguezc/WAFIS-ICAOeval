@@ -1,31 +1,30 @@
 import os
 from pathlib import Path
 import argparse
-from recognizer import FaceNetRecognizer
+from recognizer import ArcFaceRecognizer
 from collections import defaultdict
 import pandas as pd
 import json
-from tqdm import tqdm  # For progress bar
+from tqdm import tqdm
 from PIL import Image, ImageOps
 import numpy as np
 import torch
 
+
 def load_and_preprocess_image(image_path, img_size, img_norm=False, image_format='png'):
-    # Apply some operations before getting the embedding if needed, depend on the watermarking model
+    """Load and do a first-pass resize — mirrors FaceNet service exactly."""
     if image_format == 'png':
         img = Image.open(image_path).convert('RGB')
         img_cover = ImageOps.fit(img, (img_size, img_size))
-
     elif image_format == 'npy':
         img_cover = np.load(image_path).astype(np.float32)
-
     return img_cover
 
 def get_identity_from_filename(filename):
     return os.path.splitext(filename.split('_')[0])[0]
 
-def get_embeddings(folder_path, image_files, img_size, face_recognizer_service, image_format='png',
-                   debug_img=False):
+def get_embeddings(folder_path, image_files, img_size, face_recognizer_service,
+                   image_format='png', debug_img=False):
     """Generate embeddings for all images in the folder."""
     embeddings_by_identity = defaultdict(list)
     for img_path in tqdm(image_files, desc=f"Generating embeddings for {folder_path.name}"):
@@ -114,8 +113,9 @@ def calculate_metrics(genuine_distances, impostor_distances, num_thresholds=None
             'TAR_at_FAR': TAR_metric['TAR_at_FAR'],
             'Actual_FAR': TAR_metric['Actual_FAR']}
 
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Face recognition using FaceNet")
+    parser = argparse.ArgumentParser(description="Face recognition using arcface backbone")
     parser.add_argument('--dataset', type=str, choices=['facelab_london', 'CFD', 'ONOT', 'LFW', 'SCface', 'ONOT_set1'], default='CFD')
     parser.add_argument('--train_dataset', type=str, choices=['celeba_hq', 'coco'], default='celeba_hq')
     parser.add_argument('--watermarking_model', type=str, default='stegaformer')
@@ -131,6 +131,10 @@ def main() -> None:
     parser.add_argument('--format_evaluation', type=str, default='offline', 
                         choices=['offline', 'online'],
                         help='Format of the evaluation, offline (all images in png format) or online (npy arrays stored during watermarking)')
+    parser.add_argument('--backbone', type=str, default='r50', choices=['r50', 'r100'],
+                        help='ArcFace backbone: iresnet50 (r50) | iresnet100 (r100)')
+    parser.add_argument('--weight_path', type=str, default='models',
+                        help='Path to pretrained ArcFace backbone .pth weights')
     parser.add_argument('--use_mtcnn', action='store_true', default=False)
     parser.add_argument('--target_far', type=float, default=0.001)
     parser.add_argument('--debug_img', action='store_true', default=False)
@@ -148,12 +152,22 @@ def main() -> None:
     watermarked_path = Path(f'output/watermarking/{args.watermarking_model}/{args.experiment_name}/inference/{args.train_dataset}/{args.dataset}/watermarked_images')
     watermarked_templates = Path(f'output/watermarking/{args.watermarking_model}/{args.experiment_name}/inference/{args.train_dataset}/{args.dataset}/watermarked_templates')
     # path for output images
-    output_images_path = Path(f'output/recognition/{args.watermarking_model}/{args.experiment_name}/{args.train_dataset}/{args.dataset}/facenet/images')
+    output_images_path = Path(f'output/recognition/{args.watermarking_model}/{args.experiment_name}/{args.train_dataset}/{args.dataset}/arcface/images')
+    # weight path for ArcFace backbone
+    if args.backbone == 'r50':
+        backbone_name = 'ms1mv3_arcface_r50_fp16_backbone.pth'
+        weight_path = Path(args.weight_path, backbone_name)
+    elif args.backbone == 'r100':
+        backbone_name = 'ms1mv3_arcface_r100_fp16_backbone.pth'
+        weight_path = Path(args.weight_path, backbone_name)
+
     # target far for reporting TAR, can be set to 0.0001 for 0.01% FAR, 0.001 for 0.1% FAR, or 0.01 for 1% FAR
     target_far = args.target_far
-    # Initialize the FaceNet recognizer
-    face_recognizer_service = FaceNetRecognizer(device=args.device, image_format=image_format, use_mtcnn=args.use_mtcnn, 
-                                                save_images_path = output_images_path)
+
+    print(f"Using ArcFace backbone: {args.backbone} with weights from {weight_path}")
+    # Initialize the ArcFace recognizer
+    face_recognizer_service = ArcFaceRecognizer(device=args.device, image_format=image_format, use_mtcnn=args.use_mtcnn, 
+                                                save_images_path = output_images_path, weight_path=weight_path, network=args.backbone)
 
     if not test_path.exists():
         print(f"Dataset path not found: {test_path}")
@@ -258,12 +272,10 @@ def main() -> None:
                 dist_wm_template = face_recognizer_service.get_distance(watermarked_templates_embs[identity_a][0], watermarked_embs[identity_b][0], metric=args.metric)
                 # raw distance between original probe and watermarked probe
                 raw_dist = face_recognizer_service.get_distance(tests_embs[identity_b][0], watermarked_embs[identity_b][0], metric=args.metric)
-                variation_dist = (dist_wm - dist) # OO - OW
-
+                variation_dist = (dist_wm - dist) 
                 # raw distance between original template and watermarked template
                 raw_dist_template = face_recognizer_service.get_distance(templates_embs[identity_a][0], watermarked_templates_embs[identity_a][0], metric=args.metric)
-                variation_dist_template = (dist_wm_template - dist) # OO - WW
-
+                variation_dist_template = (dist_wm_template - dist) 
                 
                 #print(f"Distance: {dist}")
                 #print(f"Distance WM: {dist_wm}")
@@ -294,7 +306,7 @@ def main() -> None:
                     variation_dist = (dist_wm - dist) 
                     # raw distance between original template and watermarked template
                     raw_dist_template = face_recognizer_service.get_distance(templates_embs[identity_a][0], watermarked_templates_embs[identity_b][0], metric=args.metric)
-                    variation_dist_template = (dist_wm_template - dist)
+                    variation_dist_template = (dist_wm_template - dist) 
 
                     #print(f"Distance: {dist}")
                     #print(f"Distance WM: {dist_wm}")
@@ -379,7 +391,7 @@ def main() -> None:
         print(f"Std deviation of raw distance for impostor pairs templates due to WM: {std_impostor_raw_distance_template}")
 
     # Store the distances in csv files
-    output_dir = Path(f'output/recognition/{args.watermarking_model}/{args.experiment_name}/{args.train_dataset}/{args.dataset}/facenet/distances')
+    output_dir = Path(f'output/recognition/{args.watermarking_model}/{args.experiment_name}/{args.train_dataset}/{args.dataset}/arcface/distances')
     output_dir.mkdir(parents=True, exist_ok=True)
 
     pd.DataFrame(genuine_pairs, columns=['id_a', 'id_b']).to_excel(output_dir / f'{args.dataset}_genuine_pairs.xlsx', index=False)
@@ -436,53 +448,53 @@ def main() -> None:
             impostor_wm_both_df.to_csv(output_dir / f'{args.metric}_impostor_distances_watermarked_both_online_{mtcnn_tag}.csv', index=False)
 
     # Store the results in a new summary json file for recognition
-    recognition_summary_path = Path(f'output/recognition/{args.watermarking_model}/{args.experiment_name}/{args.train_dataset}/{args.dataset}/facenet')
+    recognition_summary_path = Path(f'output/recognition/{args.watermarking_model}/{args.experiment_name}/{args.train_dataset}/{args.dataset}/arcface')
     results_filepath = recognition_summary_path / f"results_summary_{mtcnn_tag}.json"
 
     results_data = {}
     results_data['average_distances'] = {
-        f'facenet_avg_var_dist_{args.metric}_genuine_due_watermark': mean_variation_genuine if genuine_variation_distances else None,
-        f'facenet_avg_var_dist_{args.metric}_impostor_due_watermark': mean_variation_impostor if impostor_variation_distances else None,
-        f'facenet_avg_raw_dist_{args.metric}_genuine_raw_vs_watermark': avg_genuine_raw_distance if genuine_raw_distances else None,
-        f'facenet_avg_raw_dist_{args.metric}_impostor_raw_vs_watermark': avg_impostor_raw_distance if impostor_raw_distances else None,
-        f'facenet_avg_raw_dist_{args.metric}_genuine_raw_vs_watermark_template': avg_genuine_raw_distance_template if genuine_raw_distances_template else None,
-        f'facenet_avg_raw_dist_{args.metric}_impostor_raw_vs_watermark_template': avg_impostor_raw_distance_template if impostor_raw_distances_template else None,
-        f'facenet_avg_var_dist_{args.metric}_genuine_due_watermark_both': mean_variation_genuine_template if genuine_variation_distances_template else None,
-        f'facenet_avg_var_dist_{args.metric}_impostor_due_watermark_both': mean_variation_impostor_template if impostor_variation_distances_template else None
+        f'arcface_avg_var_dist_{args.metric}_genuine_due_watermark': mean_variation_genuine if genuine_variation_distances else None,
+        f'arcface_avg_var_dist_{args.metric}_impostor_due_watermark': mean_variation_impostor if impostor_variation_distances else None,
+        f'arcface_avg_raw_dist_{args.metric}_genuine_raw_vs_watermark': avg_genuine_raw_distance if genuine_raw_distances else None,
+        f'arcface_avg_raw_dist_{args.metric}_impostor_raw_vs_watermark': avg_impostor_raw_distance if impostor_raw_distances else None,
+        f'arcface_avg_raw_dist_{args.metric}_genuine_raw_vs_watermark_template': avg_genuine_raw_distance_template if genuine_raw_distances_template else None,
+        f'arcface_avg_raw_dist_{args.metric}_impostor_raw_vs_watermark_template': avg_impostor_raw_distance_template if impostor_raw_distances_template else None,
+        f'arcface_avg_var_dist_{args.metric}_genuine_due_watermark_both': mean_variation_genuine_template if genuine_variation_distances_template else None,
+        f'arcface_avg_var_dist_{args.metric}_impostor_due_watermark_both': mean_variation_impostor_template if impostor_variation_distances_template else None
     }
 
     # Add the std of distances to the results data
     results_data['std_distances'] = {
-        f'facenet_std_var_dist_{args.metric}_genuine_due_watermark': std_variation_genuine if genuine_variation_distances else None,
-        f'facenet_std_var_dist_{args.metric}_impostor_due_watermark': std_variation_impostor if impostor_variation_distances else None,
-        f'facenet_std_raw_dist_{args.metric}_genuine_raw_vs_watermark': std_genuine_raw_distance if genuine_raw_distances else None,
-        f'facenet_std_raw_dist_{args.metric}_impostor_raw_vs_watermark': std_impostor_raw_distance if impostor_raw_distances else None,
-        f'facenet_std_raw_dist_{args.metric}_genuine_raw_vs_watermark_template': std_genuine_raw_distance_template if genuine_raw_distances_template else None,
-        f'facenet_std_raw_dist_{args.metric}_impostor_raw_vs_watermark_template': std_impostor_raw_distance_template if impostor_raw_distances_template else None,
-        f'facenet_std_var_dist_{args.metric}_genuine_due_watermark_both': std_variation_genuine_template if genuine_variation_distances_template else None,
-        f'facenet_std_var_dist_{args.metric}_impostor_due_watermark_both': std_variation_impostor_template if impostor_variation_distances_template else None
+        f'arcface_std_var_dist_{args.metric}_genuine_due_watermark': std_variation_genuine if genuine_variation_distances else None,
+        f'arcface_std_var_dist_{args.metric}_impostor_due_watermark': std_variation_impostor if impostor_variation_distances else None,
+        f'arcface_std_raw_dist_{args.metric}_genuine_raw_vs_watermark': std_genuine_raw_distance if genuine_raw_distances else None,
+        f'arcface_std_raw_dist_{args.metric}_impostor_raw_vs_watermark': std_impostor_raw_distance if impostor_raw_distances else None,
+        f'arcface_std_raw_dist_{args.metric}_genuine_raw_vs_watermark_template': std_genuine_raw_distance_template if genuine_raw_distances_template else None,
+        f'arcface_std_raw_dist_{args.metric}_impostor_raw_vs_watermark_template': std_impostor_raw_distance_template if impostor_raw_distances_template else None,
+        f'arcface_std_var_dist_{args.metric}_genuine_due_watermark_both': std_variation_genuine_template if genuine_variation_distances_template else None,
+        f'arcface_std_var_dist_{args.metric}_impostor_due_watermark_both': std_variation_impostor_template if impostor_variation_distances_template else None
     }
 
     # Add the recognition metrics to the results data
     results_data['recognition_metrics'] = {
-        f'facenet_EER_baseline_{args.metric}': metrics_baseline['EER'],
-        f'facenet_EER_watermarked_{args.metric}': metrics_baseline_wm['EER'],
-        f'facenet_FAR_at_EER_baseline_{args.metric}': metrics_baseline['FAR_at_EER'],
-        f'facenet_FAR_at_EER_watermarked_{args.metric}': metrics_baseline_wm['FAR_at_EER'],
-        f'facenet_FRR_at_EER_baseline_{args.metric}': metrics_baseline['FRR_at_EER'],
-        f'facenet_FRR_at_EER_watermarked_{args.metric}': metrics_baseline_wm['FRR_at_EER'],
-        f'facenet_AUC_baseline_{args.metric}': metrics_baseline['AUC'],
-        f'facenet_AUC_watermarked_{args.metric}': metrics_baseline_wm['AUC'],
-        f'facenet_TAR_at_FAR_baseline_{args.metric}': metrics_baseline['TAR_at_FAR'],
-        f'facenet_TAR_at_FAR_watermarked_{args.metric}': metrics_baseline_wm['TAR_at_FAR'],
-        f'facenet_Actual_FAR_baseline_{args.metric}': metrics_baseline['Actual_FAR'],
-        f'facenet_Actual_FAR_watermarked_{args.metric}': metrics_baseline_wm['Actual_FAR'],
-        f'facenet_EER_watermarked_both_{args.metric}': metrics_baseline_wm_template['EER'],
-        f'facenet_FAR_at_EER_watermarked_both_{args.metric}': metrics_baseline_wm_template['FAR_at_EER'],
-        f'facenet_FRR_at_EER_watermarked_both_{args.metric}': metrics_baseline_wm_template['FRR_at_EER'],
-        f'facenet_AUC_watermarked_both_{args.metric}': metrics_baseline_wm_template['AUC'],
-        f'facenet_TAR_at_FAR_watermarked_both_{args.metric}': metrics_baseline_wm_template['TAR_at_FAR'],
-        f'facenet_Actual_FAR_watermarked_both_{args.metric}': metrics_baseline_wm_template['Actual_FAR']
+        f'arcface_EER_baseline_{args.metric}': metrics_baseline['EER'],
+        f'arcface_EER_watermarked_{args.metric}': metrics_baseline_wm['EER'],
+        f'arcface_FAR_at_EER_baseline_{args.metric}': metrics_baseline['FAR_at_EER'],
+        f'arcface_FAR_at_EER_watermarked_{args.metric}': metrics_baseline_wm['FAR_at_EER'],
+        f'arcface_FRR_at_EER_baseline_{args.metric}': metrics_baseline['FRR_at_EER'],
+        f'arcface_FRR_at_EER_watermarked_{args.metric}': metrics_baseline_wm['FRR_at_EER'],
+        f'arcface_AUC_baseline_{args.metric}': metrics_baseline['AUC'],
+        f'arcface_AUC_watermarked_{args.metric}': metrics_baseline_wm['AUC'],
+        f'arcface_TAR_at_FAR_baseline_{args.metric}': metrics_baseline['TAR_at_FAR'],
+        f'arcface_TAR_at_FAR_watermarked_{args.metric}': metrics_baseline_wm['TAR_at_FAR'],
+        f'arcface_Actual_FAR_baseline_{args.metric}': metrics_baseline['Actual_FAR'],
+        f'arcface_Actual_FAR_watermarked_{args.metric}': metrics_baseline_wm['Actual_FAR'],
+        f'arcface_EER_watermarked_both_{args.metric}': metrics_baseline_wm_template['EER'],
+        f'arcface_FAR_at_EER_watermarked_both_{args.metric}': metrics_baseline_wm_template['FAR_at_EER'],
+        f'arcface_FRR_at_EER_watermarked_both_{args.metric}': metrics_baseline_wm_template['FRR_at_EER'],
+        f'arcface_AUC_watermarked_both_{args.metric}': metrics_baseline_wm_template['AUC'],
+        f'arcface_TAR_at_FAR_watermarked_both_{args.metric}': metrics_baseline_wm_template['TAR_at_FAR'],
+        f'arcface_Actual_FAR_watermarked_both_{args.metric}': metrics_baseline_wm_template['Actual_FAR']
     }
 
     # Save the updated results data back to the file
