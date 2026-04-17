@@ -18,12 +18,15 @@ def load_and_preprocess_image(image_path, img_size, img_norm=False, image_format
         img_cover = ImageOps.fit(img, (img_size, img_size))
     elif image_format == 'npy':
         img_cover = np.load(image_path).astype(np.float32)
+        # if the image is in the range [0,1], convert to [0,255] float
+        if img_cover.max() <= 1.0:
+            img_cover = (img_cover * 255)
     return img_cover
 
 def get_identity_from_filename(filename):
     return os.path.splitext(filename.split('_')[0])[0]
 
-def get_embeddings(folder_path, image_files, img_size, face_recognizer_service,
+def get_embeddings_old(folder_path, image_files, img_size, face_recognizer_service,
                    image_format='png', debug_img=False):
     """Generate embeddings for all images in the folder."""
     embeddings_by_identity = defaultdict(list)
@@ -31,9 +34,67 @@ def get_embeddings(folder_path, image_files, img_size, face_recognizer_service,
         identity = get_identity_from_filename(img_path.name)
         img = load_and_preprocess_image(img_path, img_size, image_format=image_format)
         embedding = face_recognizer_service.get_embedding(img, debug_img=debug_img)
+        
         if embedding is not None:
             embeddings_by_identity[identity].append(embedding)
     return embeddings_by_identity
+
+def get_embeddings(folder_path, image_files, img_size, face_recognizer_service,
+                   image_format='png', debug_img=False, precomputed_boxes=None):
+    """
+    Generate embeddings for all images in the folder.
+    
+    Args:
+        precomputed_boxes: dict mapping identity -> bounding box (np.ndarray).
+                           When provided, this box is reused instead of running
+                           MTCNN detection, avoiding uint8 quantization on
+                           watermarked images.
+    """
+    embeddings_by_identity = defaultdict(list)
+    for img_path in tqdm(image_files, desc=f"Generating embeddings for {folder_path.name}"):
+        identity = get_identity_from_filename(img_path.name)
+        img = load_and_preprocess_image(img_path, img_size, image_format=image_format)
+        #print(f"min and max pixel values for image {img_path.name}: {img.min()} - {img.max()}")
+        
+        box = precomputed_boxes.get(identity) if precomputed_boxes else None
+        embedding = face_recognizer_service.get_embedding(img, debug_img=debug_img,
+                                                          precomputed_box=box, origin='watermarked' if box is not None else 'original')
+        
+        if embedding is not None:
+            embeddings_by_identity[identity].append(embedding)
+        else:
+            raise ValueError(f"Failed to get embedding for image: {img_path} with identity: {identity}")
+        
+    return embeddings_by_identity
+
+def get_embeddings_and_boxes(folder_path, image_files, img_size, face_recognizer_service,
+                              image_format='png', debug_img=False):
+    """
+    Generate embeddings AND store the detected bounding boxes for later reuse.
+    Only meaningful when use_mtcnn=True.
+    
+    Returns:
+        embeddings_by_identity: dict  identity -> [embedding, ...]
+        boxes_by_identity:      dict  identity -> np.ndarray (bounding box)
+    """
+    embeddings_by_identity = defaultdict(list)
+    boxes_by_identity = {}
+    for img_path in tqdm(image_files, desc=f"Generating embeddings+boxes for {folder_path.name}"):
+        identity = get_identity_from_filename(img_path.name)
+        img = load_and_preprocess_image(img_path, img_size, image_format=image_format)
+        
+        embedding, box = face_recognizer_service.get_embedding_and_box(img, debug_img=debug_img, origin='original')
+        
+        if embedding is not None:
+            embeddings_by_identity[identity].append(embedding)
+            if box is not None:
+                boxes_by_identity[identity] = box
+            else:
+                raise ValueError(f"Failed to get bounding box for image: {img_path} with identity: {identity}")
+        else:
+            raise ValueError(f"Failed to get embedding for image: {img_path} with identity: {identity}")
+        
+    return embeddings_by_identity, boxes_by_identity
 
 def calculate_tar_at_far(far_list, frr_list, target_far=0.001): # Note: 0.01% = 0.0001, 0.1% = 0.001, 1% = 0.01
     """
@@ -126,7 +187,7 @@ def main() -> None:
                         help='Size of the image before processing, used for cropping or fitting')
     parser.add_argument('--metric', type=str, default='cosine',
                         choices=['cosine', 'euclidean'])
-    parser.add_argument('--thresholds', type=int, default=None,
+    parser.add_argument('--thresholds', type=int, default=20000,
                         help='Number of thresholds to evaluate for metrics calculation. If not set, all unique distances are used.')
     parser.add_argument('--format_evaluation', type=str, default='offline', 
                         choices=['offline', 'online'],
@@ -219,18 +280,57 @@ def main() -> None:
     else:
         raise ValueError(f"Unsupported evaluation format: {args.format_evaluation}")
     
-    # get the embeddings
-    watermarked_templates_embs = get_embeddings(watermarked_templates, watermarked_templates_paths, args.img_size, face_recognizer_service, image_format=image_format)
-    templates_embs = get_embeddings(templates_path, template_paths, args.img_size, face_recognizer_service)
-    template_identities = set(templates_embs.keys())
+    # -----------------------------------------------------------------------
+    # Generate embeddings
+    # When use_mtcnn=True, we detect bounding boxes on the ORIGINAL images
+    # and reuse them for the watermarked counterparts. This prevents MTCNN's
+    # internal uint8 quantization from destroying subtle watermark differences 
+    # and ensures a fair comparison between original and watermarked images.
+    # -----------------------------------------------------------------------
+    if args.use_mtcnn:
+        # Original templates: detect + embed, save boxes
+        templates_embs, template_boxes = get_embeddings_and_boxes(
+            templates_path, template_paths, args.img_size, face_recognizer_service, debug_img=args.debug_img)
+        
+        template_identities = set(templates_embs.keys())
+ 
+        # Filter paths to only include identities present in templates
+        filtered_image_paths = [p for p in image_paths if get_identity_from_filename(p.name) in template_identities]
+        filtered_watermarked_paths = [p for p in watermarked_paths if get_identity_from_filename(p.name) in template_identities]
+ 
+        # Original probes: detect + embed, save boxes
+        tests_embs, probe_boxes = get_embeddings_and_boxes(
+            test_path, filtered_image_paths, args.img_size, face_recognizer_service, debug_img=args.debug_img)
+ 
+        # Watermarked templates: reuse template_boxes
+        watermarked_templates_embs = get_embeddings(
+            watermarked_templates, watermarked_templates_paths, args.img_size, 
+            face_recognizer_service, image_format=image_format,
+            precomputed_boxes=template_boxes, debug_img=args.debug_img)
+        
+        # Watermarked probes: reuse probe_boxes
+        watermarked_embs = get_embeddings(
+            watermarked_path, filtered_watermarked_paths, args.img_size, 
+            face_recognizer_service, image_format=image_format,
+            debug_img=args.debug_img, precomputed_boxes=probe_boxes)    
 
-    # Filter image_paths and watermarked_paths to only include identities present in templates
-    filtered_image_paths = [p for p in image_paths if get_identity_from_filename(p.name) in template_identities]
-    filtered_watermarked_paths = [p for p in watermarked_paths if get_identity_from_filename(p.name) in template_identities]
-
-    tests_embs = get_embeddings(test_path, filtered_image_paths, args.img_size, face_recognizer_service)
-    watermarked_embs = get_embeddings(watermarked_path, filtered_watermarked_paths, args.img_size, face_recognizer_service, image_format=image_format, 
-                                      debug_img=args.debug_img)
+    else:
+        # No MTCNN: process everything independently (no box reuse needed)
+        watermarked_templates_embs = get_embeddings(
+            watermarked_templates, watermarked_templates_paths, args.img_size, 
+            face_recognizer_service, image_format=image_format)
+        
+        templates_embs = get_embeddings(templates_path, template_paths, args.img_size, face_recognizer_service)
+        template_identities = set(templates_embs.keys())
+ 
+        filtered_image_paths = [p for p in image_paths if get_identity_from_filename(p.name) in template_identities]
+        filtered_watermarked_paths = [p for p in watermarked_paths if get_identity_from_filename(p.name) in template_identities]
+ 
+        tests_embs = get_embeddings(test_path, filtered_image_paths, args.img_size, face_recognizer_service)
+        
+        watermarked_embs = get_embeddings(
+            watermarked_path, filtered_watermarked_paths, args.img_size, 
+            face_recognizer_service, image_format=image_format, debug_img=args.debug_img)
     
     print(f"Number of identities in templates: {len(templates_embs)}")
     print(f"Example identities in templates: {list(templates_embs.keys())[:5]}")

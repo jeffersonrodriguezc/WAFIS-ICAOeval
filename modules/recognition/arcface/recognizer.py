@@ -7,12 +7,12 @@ from PIL import Image
 from facenet_pytorch import MTCNN
 from facenet_pytorch.models import mtcnn as mtcnn_mod
 
-from typing import Union
+from typing import Optional, Tuple, Union
 from PIL import Image
+import cv2
 
 # ---------------------------------------------------------------------------
 # IResNet backbone — inlined, no dependency on cloned repo
-# Matches arcface_torch/backbones/iresnet.py exactly
 # ---------------------------------------------------------------------------
 
 from torch import nn
@@ -156,59 +156,133 @@ def conv3x3(in_planes, out_planes, stride=1, groups=1, dilation=1):
 def conv1x1(in_planes, out_planes, stride=1):
     return nn.Conv2d(in_planes, out_planes, kernel_size=1, stride=stride, bias=False)
 
-def _extract_face_float(img, box, image_size=160, margin=0, save_path=None):
+def _extract_face_float_old(img, box, image_size=112, margin=0, save_path=None):
     """
-    Replacement for facenet_pytorch.models.utils.detect_face.extract_face
-    Accepts float32 arrays/tensors without quantizing to uint8.
-    - img: np.ndarray HWC float32 in [0,255], or torch.Tensor CHW/HWC float32 in [0,255]
-    - box: [x1, y1, x2, y2]
-    Returns: torch.Tensor [3, image_size, image_size] float32 in [0,255]
+    Float-safe replacement for extract_face.
+    Matches original crop logic + uses INTER_AREA resize for consistency.
     """
-    # to numpy HWC float32
+    # --- Convert to numpy HWC float32 ---
     if isinstance(img, torch.Tensor):
-        if img.dim() == 3 and img.shape[0] in (1, 3):      # CHW
+        if img.dim() == 3 and img.shape[0] in (1, 3):
             img = img.permute(1, 2, 0).cpu().numpy()
-        elif img.dim() == 3 and img.shape[2] in (1, 3):    # HWC
+        elif img.dim() == 3 and img.shape[2] in (1, 3):
             img = img.cpu().numpy()
         else:
             raise ValueError(f"Unsupported tensor shape: {tuple(img.shape)}")
     elif isinstance(img, np.ndarray):
-        pass  # already fine
+        pass
     else:
-        # likely PIL.Image – fallback (esto cuantiza, evítalo en la ruta npy)
         img = np.asarray(img, dtype=np.float32)
 
     img = img.astype(np.float32)
     h, w = img.shape[:2]
 
-    x1, y1, x2, y2 = [float(b) for b in box]
-    if isinstance(margin, int):
-        mx = my = margin
-    else:
-        mx, my = margin
+    # --- Margin: replicate EXACT original logic ---
+    margin_adj = [
+        margin * (box[2] - box[0]) / (image_size - margin),
+        margin * (box[3] - box[1]) / (image_size - margin),
+    ]
+    x1 = int(max(box[0] - margin_adj[0] / 2, 0))
+    y1 = int(max(box[1] - margin_adj[1] / 2, 0))
+    x2 = int(min(box[2] + margin_adj[0] / 2, w))
+    y2 = int(min(box[3] + margin_adj[1] / 2, h))
 
-    x1 = max(0.0, x1 - mx / 2.0)
-    y1 = max(0.0, y1 - my / 2.0)
-    x2 = min(w,   x2 + mx / 2.0)
-    y2 = min(h,   y2 + my / 2.0)
-
-    x1i, y1i, x2i, y2i = int(round(x1)), int(round(y1)), int(round(x2)), int(round(y2))
-    face_np = img[y1i:y2i, x1i:x2i, :]  # H',W',C
+    face_np = img[y1:y2, x1:x2, :]
 
     if face_np.size == 0:
         face_np = np.zeros((image_size, image_size, 3), dtype=np.float32)
-        face_t = torch.from_numpy(face_np).permute(2, 0, 1)  # C,H,W
+        face_t = torch.from_numpy(face_np).permute(2, 0, 1)
     else:
-        face_t = torch.from_numpy(face_np).permute(2, 0, 1).unsqueeze(0).float()  # 1,C,H,W
-        face_t = F.interpolate(face_t, size=(image_size, image_size),
-                               mode='bilinear', align_corners=False)
-        face_t = face_t.squeeze(0)  # C,H,W
+        # INTER_AREA to match original cv2.resize behavior
+        face_np = cv2.resize(
+            face_np,
+            (image_size, image_size),
+            interpolation=cv2.INTER_AREA
+        )
+        face_t = torch.from_numpy(face_np.copy()).permute(2, 0, 1).float()
 
+    return face_t
+
+def _extract_face_float(img, box, image_size=112, margin=0, save_path=None):
+    """
+    Float-safe replacement for extract_face.
+    Matches original crop logic + uses symmetric pad/crop to reach image_size
+    WITHOUT rescaling pixels (preserves original pixel values).
+    """
+    # --- Convert to numpy HWC float32 ---
+    if isinstance(img, torch.Tensor):
+        if img.dim() == 3 and img.shape[0] in (1, 3):
+            img = img.permute(1, 2, 0).cpu().numpy()
+        elif img.dim() == 3 and img.shape[2] in (1, 3):
+            img = img.cpu().numpy()
+        else:
+            raise ValueError(f"Unsupported tensor shape: {tuple(img.shape)}")
+    elif isinstance(img, np.ndarray):
+        pass
+    else:
+        img = np.asarray(img, dtype=np.float32)
+
+    img = img.astype(np.float32)
+    h, w = img.shape[:2]
+
+    # --- Margin: replicate EXACT original logic ---
+    margin_adj = [
+        margin * (box[2] - box[0]) / (image_size - margin),
+        margin * (box[3] - box[1]) / (image_size - margin),
+    ]
+    x1 = int(max(box[0] - margin_adj[0] / 2, 0))
+    y1 = int(max(box[1] - margin_adj[1] / 2, 0))
+    x2 = int(min(box[2] + margin_adj[0] / 2, w))
+    y2 = int(min(box[3] + margin_adj[1] / 2, h))
+
+    face_np_old = img[y1:y2, x1:x2, :]
+
+    if face_np_old.size == 0:
+        raise ValueError(
+            f"Empty face crop with box {box} and margin {margin}. "
+            "Check the box coordinates and margin size."
+        )
+
+    # --- Symmetric pad or crop to reach image_size x image_size ---
+    
+    fh, fw = face_np_old.shape[:2]
+
+    # Compute new crop window in the original image
+    diff_h = image_size - fh
+    diff_w = image_size - fw
+
+    before_h = diff_h // 2
+    after_h  = diff_h - before_h
+    before_w = diff_w // 2
+    after_w  = diff_w - before_w
+
+    new_y1 = y1 - before_h
+    new_y2 = y2 + after_h
+    new_x1 = x1 - before_w
+    new_x2 = x2 + after_w
+
+    # Validate bounds before touching anything
+    if new_y1 < 0 or new_y2 > h or new_x1 < 0 or new_x2 > w:
+        raise ValueError(
+            f"Cannot expand face crop to {image_size}x{image_size}: "
+            f"requested y=[{new_y1}:{new_y2}] x=[{new_x1}:{new_x2}] "
+            f"exceeds image bounds [0:{h}] x [0:{w}]."
+        )
+
+    face_np = img[new_y1:new_y2, new_x1:new_x2, :]
+
+    assert face_np.shape[:2] == (image_size, image_size), (
+        f"Shape mismatch after pad/crop: got {face_np.shape[:2]}, "
+        f"expected ({image_size}, {image_size})"
+    )
+
+    face_t = torch.from_numpy(face_np.copy()).permute(2, 0, 1).float()
     return face_t
 
 def preprocess_for_arcface(
     array,
-    device: str = 'cpu'
+    device: str = 'cpu',
+    TARGET: tuple = (112, 112)
 ) -> torch.Tensor:
     """
     Resize to 112×112 and normalise to [-1, 1] for ArcFace inference.
@@ -224,11 +298,11 @@ def preprocess_for_arcface(
     Returns:
         torch.Tensor (B, 3, 112, 112) in [-1, 1], always with batch dimension
     """
-    TARGET = (112, 112)
 
     if isinstance(array, Image.Image):
         # 1) PIL → numpy HWC float32 [0, 255]
         arr = np.array(array.convert('RGB'), dtype=np.float32)  # (H, W, 3)
+        #print(f"preprocess_for_arcface: input PIL shape: {arr.shape}, dtype: {arr.dtype}, min: {arr.min()}, max: {arr.max()}")
 
         # 2) normalise
         arr = arr / 255.0
@@ -247,8 +321,12 @@ def preprocess_for_arcface(
                 align_corners=False
             )                                       # (1, 3, 112, 112)
 
+        #print(f"preprocess_for_arcface: after processing PIL, tensor shape: {tensor.shape}, dtype: {tensor.dtype}, min: {tensor.min().item()}, max: {tensor.max().item()}")
+
     elif isinstance(array, np.ndarray):
         arr = array.astype(np.float32)
+
+        #print(f"preprocess_for_arcface: input numpy shape: {arr.shape}, dtype: {arr.dtype}, min: {arr.min()}, max: {arr.max()}")
 
         # 1) ensure batch dimension: HWC → BHWC
         if arr.ndim == 3:
@@ -272,19 +350,33 @@ def preprocess_for_arcface(
                 mode='bilinear',
                 align_corners=False
             )                                       # (B, 3, 112, 112)
+        
+        #print(f"preprocess_for_arcface: after processing numpy, tensor shape: {tensor.shape}, dtype: {tensor.dtype}, min: {tensor.min().item()}, max: {tensor.max().item()}")
 
     elif isinstance(array, torch.Tensor):
         tensor = array.float()
-
+        #print(f"preprocess_for_arcface: input tensor shape: {tensor.shape}, dtype: {tensor.dtype}, min: {tensor.min().item()}, max: {tensor.max().item()}")
+        
         # 1) ensure batch dimension: CHW → BCHW
-        if tensor.ndim == 3:
-            tensor = tensor.unsqueeze(0)            # (1, 3, H, W)
-        elif tensor.ndim != 4:
-            raise ValueError(f"tensor input must be CHW or BCHW, got shape: {array.shape}")
+        #if tensor.ndim == 3:
+        #    tensor = tensor.unsqueeze(0)            # (1, 3, H, W)
+        #elif tensor.ndim != 4:
+        #    raise ValueError(f"tensor input must be CHW or BCHW, got shape: {array.shape}")
 
         # 2) normalise
         tensor = tensor / 255.0
         tensor = (tensor - 0.5) / 0.5              # [-1, 1]
+
+        # 3) resize
+        #if tensor.shape[-2:] != torch.Size(list(TARGET)):
+        #    tensor = F.interpolate(
+        #        tensor,
+        #        size=TARGET,
+        #        mode='bilinear',
+        #        align_corners=False
+        #    )                                       # (B, 3, 112, 112)
+        
+        #print(f"preprocess_for_arcface: after processing tensor, shape: {tensor.shape}, dtype: {tensor.dtype}, min: {tensor.min().item()}, max: {tensor.max().item()}")
 
     else:
         raise TypeError(
@@ -454,75 +546,134 @@ class ArcFaceRecognizer:
             raise ValueError(f"network must be one of {list(MODELS.keys())}, got '{network}'")
 
         # --- backbone ---
-        self.net = MODELS[network](num_features=512)
+        self.model = MODELS[network](num_features=512)
         state = torch.load(weight_path, map_location=self.device)
         # arcface_torch saves plain state_dicts; handle wrapped checkpoints too
         if isinstance(state, dict) and 'state_dict' in state:
             state = state['state_dict']
-        self.net.load_state_dict(state)
-        self.net.to(self.device)
-        self.net.eval()
+        self.model.load_state_dict(state)
+        self.model.to(self.device)
+        self.model.eval()
 
         # --- MTCNN (same config as FaceNet service, output size = 112) ---
         self.mtcnn = None
         if use_mtcnn:
-            if image_format == 'png':
-                self.mtcnn = MTCNN(
-                    image_size=self.IMG_SIZE,  # crop directly to ArcFace input size
-                    margin=0,
-                    keep_all=False,            # most prominent face only
-                    post_process=False,         # output tensor in [-1, 1]
-                    device=self.device
-                )
-            else:
-                mtcnn_mod.extract_face = _extract_face_float
-                self.mtcnn = MTCNN(
-                    image_size=self.IMG_SIZE,  # crop directly to ArcFace input size
-                    margin=0,
-                    keep_all=False,            # most prominent face only
-                    post_process=False,         # output tensor in [-1, 1]
-                    device=self.device
-                )
+            self.mtcnn = MTCNN(
+                image_size=self.IMG_SIZE,  # crop directly to facenet input size
+                margin=0,
+                keep_all=False,            
+                post_process=False,         # output tensor in [0, 255]
+                device=self.device
+            )
 
-    def get_embedding(self, img, debug_img: bool = False):
+
+    # --------------------------------------------------------------------- #
+    # Box detection (runs MTCNN detection only, no embedding)
+    # --------------------------------------------------------------------- #
+    def detect_box(self, img) -> Optional[np.ndarray]:
         """
-        Return a 512-d L2-normalised embedding. 
+        Run MTCNN face detection and return the bounding box.
+        For npy inputs, converts to uint8 PIL for detection only
+        (the box coordinates are what we need, not the pixel values).
+        
+        Returns:
+            np.ndarray of shape (4,) with [x1, y1, x2, y2] or None.
         """
-        if self.use_mtcnn:
-
-            if isinstance(img, Image.Image): # png
-                # --- MTCNN path (identical behaviour to FaceNet service) ---
-                img_tensor = self.mtcnn(img)        # (3, 112, 112) in [0, 255]
-                if debug_img and self.save_images_path is not None:
-                    show_input_vs_mtcnn_output(original=img, face_tensor=img_tensor, tag='PIL',
-                                        out_dir=self.save_images_path)
-                
-            else:
-                img = img[None, ...] # Add batch dimension
-                img_tensor = self.mtcnn(img)
-                # return the first face
-                img_tensor = img_tensor[0] if img_tensor is not None else None
-                if debug_img and self.save_images_path is not None:
-                    show_input_vs_mtcnn_output(original=torch.from_numpy(img), face_tensor=img_tensor, tag='NPY',
-                                        out_dir=self.save_images_path)
-                
-            if img_tensor is None:
-                print("No face detected in the image.")
-                return None
-                
-            tensor = img_tensor.unsqueeze(0).to(self.device)
-            # normalisation to [-1,1]
-            tensor = preprocess_for_arcface(tensor, device=self.device)
-
+        if self.mtcnn is None:
+            return None
+        
+        # Convert to PIL for detection (MTCNN.detect expects PIL or uint8)
+        if isinstance(img, Image.Image):
+            detect_img = img
         else:
-            tensor = preprocess_for_arcface(img, device=self.device)  # (3,112,112) in [-1, 1]
-                 
-        # compute the embedding    
+            raise TypeError(f"Unsupported image type: {type(img)}")
+        
+        boxes, _ = self.mtcnn.detect(detect_img)
+        
+        if boxes is not None and len(boxes) > 0:
+            return boxes[0]  # first (most prominent) face
+        return None  
+    
+    # --------------------------------------------------------------------- #
+    # Embed with precomputed box (float-safe, no uint8 quantization)
+    # --------------------------------------------------------------------- #
+    def _embed_with_box(self, img, box: np.ndarray, debug_img: bool = False, origin: str = "original") -> torch.Tensor:
+        """
+        Crop the face using a precomputed bounding box via _extract_face_float
+        (preserves float32 precision), then run through the ArcFace backbone.
+        """
+        face_tensor = _extract_face_float(img, box, image_size=self.IMG_SIZE, margin=0)
+        #print(f"Box reuse path: extracted face tensor shape: {face_tensor.shape}, dtype: {face_tensor.dtype}, min: {face_tensor.min().item()}, max: {face_tensor.max().item()}")
+        
+        #print(f"debug_img: {debug_img}, save_images_path: {self.save_images_path}, origin: {origin}")
+        if debug_img and self.save_images_path is not None:
+            #print(f"[debug_img] Box reuse path: visualizing original vs MTCNN crop for {origin} image")
+            tag = f'PIL_box_reuse-{origin}' if isinstance(img, Image.Image) else f'NPY_box_reuse-{origin}'
+            show_input_vs_mtcnn_output(original=img, face_tensor=face_tensor, 
+                                       tag=tag, out_dir=self.save_images_path)
+        
+        tensor = face_tensor.unsqueeze(0).to(self.device)
+        #print(f"Box reuse path: tensor shape before preprocess_for_arcface: {tensor.shape}, dtype: {tensor.dtype}, min: {tensor.min().item()}, max: {tensor.max().item()}")
+        tensor = preprocess_for_arcface(tensor, device=self.device, TARGET=(self.IMG_SIZE, self.IMG_SIZE))
+        #print(f"Box reuse path: tensor shape after preprocess_for_arcface: {tensor.shape}, dtype: {tensor.dtype}, min: {tensor.min().item()}, max: {tensor.max().item()}")
+        
         with torch.no_grad():
-            embedding = self.net(tensor)
+            embedding = self.model(tensor)
+        
+        return embedding.squeeze(0)  
+    
+    # --------------------------------------------------------------------- #
+    # get_embedding_and_box: detect + embed, return both
+    # --------------------------------------------------------------------- #
+    def get_embedding_and_box(self, img, debug_img: bool = False, origin: str = "original") -> Tuple[Optional[torch.Tensor], Optional[np.ndarray]]:
+        """
+        Detect face with MTCNN, compute embedding, and return both the
+        embedding and the bounding box for later reuse on watermarked images.
+        
+        Returns:
+            (embedding, box) — embedding is 512-d tensor, box is np.ndarray(4,)
+        """
+        if not self.use_mtcnn:
+            # No MTCNN: just embed, no box
+            emb = self.get_embedding(img)
+            return emb, None
+        
+        # Detect box
+        box = self.detect_box(img)
+        if box is None:
+            raise ValueError("MTCNN failed to detect a face in the image.")
+        
+        # Now run get embedding with the precomputed box (float-safe)
+        embedding = self.get_embedding(img, debug_img=debug_img, precomputed_box=box, origin=origin)
+        
+        return embedding.squeeze(0), box      
 
+    # --------------------------------------------------------------------- #
+    # get_embedding: original method, now with optional precomputed_box
+    # --------------------------------------------------------------------- #
+    def get_embedding(self, img, debug_img: bool = False, 
+                      precomputed_box: Optional[np.ndarray] = None,
+                      origin: str = "original"):
+        """
+        Return a 512-d embedding.
+        
+        If precomputed_box is provided and use_mtcnn=True, the box is used
+        to crop the face directly (float-safe), bypassing MTCNN detection
+        and its internal uint8 quantization.
+        """
+        # --- Box reuse path: float-safe crop ---
+        if precomputed_box is not None and self.use_mtcnn:
+            return self._embed_with_box(img, precomputed_box, debug_img=debug_img, origin=origin)
+        
+        tensor = preprocess_for_arcface(img, device=self.device,
+                                            TARGET=(self.IMG_SIZE, self.IMG_SIZE))
+                 
+        with torch.no_grad():
+            embedding = self.model(tensor)
+ 
         return embedding.squeeze(0) 
 
+    
     def get_distance(self, emb1: torch.Tensor, emb2: torch.Tensor, metric: str) -> float:
         """
         Calculate the distance between two facial embeddings.

@@ -58,19 +58,20 @@ def _read_distance_column(fpath: Path) -> np.ndarray:
     return best.dropna().to_numpy(dtype=float)
 
 
-def load_distances(exp_path: Path, dataset: str, metric: str) -> Dict[str, Dict[str, np.ndarray]]:
+def load_distances(exp_path: Path, dataset: str, metric: str, modality: str, FRModel: str, train_dataset: str) -> Dict[str, Dict[str, np.ndarray]]:
     """Carga los cuatro CSVs de distancias para un experimento+dataset+métrica."""
     files = {
-        ('genuine', 'baseline'):     f"{metric}_genuine_distances_baseline.csv",
-        ('genuine', 'watermarked'):  f"{metric}_genuine_distances_watermarked.csv",
-        ('impostor', 'baseline'):    f"{metric}_impostor_distances_baseline.csv",
-        ('impostor', 'watermarked'): f"{metric}_impostor_distances_watermarked.csv",
+        ('genuine', 'baseline'):     f"{metric}_genuine_distances_baseline_{modality}.csv",
+        ('genuine', 'watermarked'):  f"{metric}_genuine_distances_watermarked_{modality}.csv",
+        ('impostor', 'baseline'):    f"{metric}_impostor_distances_baseline_{modality}.csv",
+        ('impostor', 'watermarked'): f"{metric}_impostor_distances_watermarked_{modality}.csv",
     }
-    dataset_dir = Path(exp_path) / dataset
+    dataset_dir = Path(exp_path) / train_dataset / dataset / FRModel / 'distances'
     out = {'genuine': {}, 'impostor': {}}
 
     for (kind, state), fname in files.items():
         fpath = dataset_dir / fname
+        print(f"Trying to load {kind} {state} from {fpath}...")
         if fpath.is_file():
             try:
                 out[kind][state] = _read_distance_column(fpath)
@@ -232,8 +233,15 @@ def main():
     parser.add_argument("--datasets", type=str, nargs="+",
                         default=["CFD", "facelab_london"],
                         help="Nombres de carpetas de datasets a incluir.")
+    parser.add_argument("--train_dataset", type=str, default="celeba_hq",
+                        choices=["celeba_hq", "coco"],
+                        help="Nombre del dataset de entrenamiento usado en las rutas de los CSVs.")
+    parser.add_argument("--FRModel", type=str, help="Nombre del modelo de reconocimiento facial usado en las rutas de los CSVs (ej., 'arcface' o 'facenet').")
+    parser.add_argument("--modality", type=str, default='online_mtcnn',
+                        choices=['online_mtcnn', 'online_no-mtcnn', 'mtcnn', 'no-mtcnn'],
+                        help="Modalidad de evaluación usada en las rutas de los CSVs (ej., 'online_mtcnn' o 'offline').")
     parser.add_argument("--bins", type=int, default=100, help="Número de bins para histograma.")
-    parser.add_argument("--style", type=str, default="lines", choices=["lines", "fill"],
+    parser.add_argument("--style", type=str, default="fill", choices=["lines", "fill"],
                         help="Estilo de visualización: líneas finas con guiones o relleno transparente.")
     parser.add_argument("--save", action="store_true",
                         help="Guardar figuras en <repo>/evaluation/visualizations/<algorithm>/plots")
@@ -244,6 +252,7 @@ def main():
     # Rutas
     recognition_root = repo_root() / "experiments" / "output" / "recognition"
     experiments = discover_experiments(recognition_root, args.algorithm)
+    print(f"Found {len(experiments)} experiments for algorithm '{args.algorithm}'.")
 
     # Por dataset, una lista de (bpp, data)
     per_dataset: Dict[str, List[Tuple[str, Dict]]] = {ds: [] for ds in args.datasets}
@@ -263,7 +272,7 @@ def main():
     # Carga datos
     for _, bpp_str, exp_path in exp_info:
         for ds in args.datasets:
-            data = load_distances(exp_path, ds, args.metric)
+            data = load_distances(exp_path, ds, args.metric, args.modality, args.FRModel, args.train_dataset)
             if any(len(v) > 0 for section in data.values() for v in section.values()):
                 per_dataset[ds].append((bpp_str, data))
 

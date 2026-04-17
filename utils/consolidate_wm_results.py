@@ -164,6 +164,7 @@ def main():
             continue
         row = build_row(fp, payload)  # <-- FIX: solo esta llamada
         if any(str(row.get(k, "")).strip() == "" for k in REQUIRED_FIELDS):
+            print(f"[WARN] Missing required fields in {fp}; row will have blanks: {row}", file=sys.stderr)
             missing_any_required += 1
         rows.append(row)
 
