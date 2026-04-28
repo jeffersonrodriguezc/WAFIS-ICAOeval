@@ -6,16 +6,21 @@ import torch.nn.functional as F
 from PIL import Image
 from facenet_pytorch import MTCNN
 from facenet_pytorch.models import mtcnn as mtcnn_mod
-
+from torch import nn
 from typing import Optional, Tuple, Union
 from PIL import Image
+from skimage import transform as trans
 import cv2
 
 # ---------------------------------------------------------------------------
 # IResNet backbone — inlined, no dependency on cloned repo
 # ---------------------------------------------------------------------------
 
-from torch import nn
+arcface_dst = np.array(
+    [[38.2946, 51.6963], [73.5318, 51.5014], [56.0252, 71.7366],
+     [41.5493, 92.3655], [70.7299, 92.2041]],
+    dtype=np.float32)
+
 
 def _to_hwc_uint8_for_viz(x: Union[Image.Image, np.ndarray, torch.Tensor]) -> Image.Image:
     """Convierte PIL/np/tensor a PIL RGB para visualizar (uint8), exprimiendo dims=1 si existen."""
@@ -156,7 +161,97 @@ def conv3x3(in_planes, out_planes, stride=1, groups=1, dilation=1):
 def conv1x1(in_planes, out_planes, stride=1):
     return nn.Conv2d(in_planes, out_planes, kernel_size=1, stride=stride, bias=False)
 
-def _extract_face_float_old(img, box, image_size=112, margin=0, save_path=None):
+def estimate_norm(lmk, image_size=112):
+    assert lmk.shape == (5, 2)
+    assert image_size%112==0 or image_size%128==0
+
+    lmk = np.array(lmk, dtype=np.float32)
+    if image_size%112==0:
+        ratio = float(image_size)/112.0
+        diff_x = 0
+    else:
+        ratio = float(image_size)/128.0
+        diff_x = 8.0*ratio
+    dst = arcface_dst * ratio
+    dst[:,0] += diff_x
+    tform = trans.SimilarityTransform()
+    tform.estimate(lmk, dst)
+    M = tform.params[0:2, :]
+    return M
+
+def norm_crop(img, landmark, image_size=112):
+    M = estimate_norm(landmark, image_size)
+    warped = cv2.warpAffine(img, M, (image_size, image_size), borderValue=0.0)
+    return warped
+
+def crop_resize(img, box, image_size):
+    """
+    box: (x1, y1, x2, y2) in pixel coords, x2/y2 exclusive-style is fine too (we resize anyway).
+    img: numpy HWC, torch HWC or CHW, or PIL Image
+    """
+
+    x1, y1, x2, y2 = map(int, box)
+    w = max(1, x2 - x1)
+    h = max(1, y2 - y1)
+
+    s = max(w, h)
+    cx = x1 + w / 2.0
+    cy = y1 + h / 2.0
+
+    # square window [x0, x0+s), [y0, y0+s)
+    x0 = int(round(cx - s / 2.0))
+    y0 = int(round(cy - s / 2.0))
+
+    if isinstance(img, np.ndarray):
+        H, W = img.shape[:2]
+    elif isinstance(img, torch.Tensor):
+        # accept HWC or CHW
+        if img.ndim != 3:
+            raise ValueError("torch img must be 3D (HWC or CHW)")
+        if img.shape[0] in (1, 3, 4) and img.shape[2] not in (1, 3, 4):
+            # CHW
+            C, H, W = img.shape
+            chw = True
+        else:
+            # HWC
+            H, W, C = img.shape
+            chw = False
+    else:
+        # PIL
+        W, H = img.size
+
+    # shift window to stay inside image (keeps square)
+    x0 = min(max(0, x0), max(0, W - s))
+    y0 = min(max(0, y0), max(0, H - s))
+    x1n, y1n = x0 + s, y0 + s
+
+    if isinstance(img, np.ndarray):
+        crop = img[y0:y1n, x0:x1n]
+        return cv2.resize(crop, (image_size, image_size), interpolation=cv2.INTER_AREA).copy()
+
+    if isinstance(img, torch.Tensor):
+        if chw:
+            crop = img[:, y0:y1n, x0:x1n]
+        else:
+            crop = img[y0:y1n, x0:x1n, :]
+
+        # simplest: use torch.nn.functional.interpolate on float
+        if chw:
+            crop_f = crop.unsqueeze(0).float()
+        else:
+            crop_f = crop.permute(2, 0, 1).unsqueeze(0).float()
+
+        out = F.interpolate(crop_f, size=(image_size, image_size), mode="area")
+        out = out.squeeze(0)
+        if not chw:
+            out = out.permute(1, 2, 0)
+        return out.byte()
+
+    # PIL
+    crop = img.crop((x0, y0, x1n, y1n))
+    return crop.resize((image_size, image_size), Image.BILINEAR)
+
+def _extract_face_float(img, box, landmarks, image_size=160, margin=0, save_path=None):
     """
     Float-safe replacement for extract_face.
     Matches original crop logic + uses INTER_AREA resize for consistency.
@@ -177,33 +272,31 @@ def _extract_face_float_old(img, box, image_size=112, margin=0, save_path=None):
     img = img.astype(np.float32)
     h, w = img.shape[:2]
 
-    # --- Margin: replicate EXACT original logic ---
-    margin_adj = [
-        margin * (box[2] - box[0]) / (image_size - margin),
-        margin * (box[3] - box[1]) / (image_size - margin),
-    ]
-    x1 = int(max(box[0] - margin_adj[0] / 2, 0))
-    y1 = int(max(box[1] - margin_adj[1] / 2, 0))
-    x2 = int(min(box[2] + margin_adj[0] / 2, w))
-    y2 = int(min(box[3] + margin_adj[1] / 2, h))
+    if landmarks is not None:
+        face_np = norm_crop(img, landmarks, image_size=image_size)
+    else:
+        # --- Margin: replicate EXACT original logic ---
+        margin_adj = [
+            margin * (box[2] - box[0]) / (image_size - margin),
+            margin * (box[3] - box[1]) / (image_size - margin),
+        ]
+        x1 = int(max(box[0] - margin_adj[0] / 2, 0))
+        y1 = int(max(box[1] - margin_adj[1] / 2, 0))
+        x2 = int(min(box[2] + margin_adj[0] / 2, w))
+        y2 = int(min(box[3] + margin_adj[1] / 2, h))
 
-    face_np = img[y1:y2, x1:x2, :]
+        box_margin = [x1, y1, x2, y2]
+        #face_np = img[y1:y2, x1:x2, :]
+        face_np = crop_resize(img, box_margin, image_size)
 
     if face_np.size == 0:
-        face_np = np.zeros((image_size, image_size, 3), dtype=np.float32)
-        face_t = torch.from_numpy(face_np).permute(2, 0, 1)
-    else:
-        # INTER_AREA to match original cv2.resize behavior
-        face_np = cv2.resize(
-            face_np,
-            (image_size, image_size),
-            interpolation=cv2.INTER_AREA
-        )
-        face_t = torch.from_numpy(face_np.copy()).permute(2, 0, 1).float()
+        raise ValueError(f"Empty face crop with box {box} and margin {margin}. Check the box coordinates and margin size.")
+    
+    face_t = torch.from_numpy(face_np.copy()).permute(2, 0, 1).float()
 
     return face_t
 
-def _extract_face_float(img, box, image_size=112, margin=0, save_path=None):
+def _extract_face_float_v2(img, box, image_size=112, margin=0, save_path=None):
     """
     Float-safe replacement for extract_face.
     Matches original crop logic + uses symmetric pad/crop to reach image_size
@@ -588,21 +681,21 @@ class ArcFaceRecognizer:
         else:
             raise TypeError(f"Unsupported image type: {type(img)}")
         
-        boxes, _ = self.mtcnn.detect(detect_img)
+        boxes, _, landmarks = self.mtcnn.detect(detect_img, landmarks=True)
         
         if boxes is not None and len(boxes) > 0:
-            return boxes[0]  # first (most prominent) face
+            return boxes[0], landmarks[0]  # first (most prominent) face and landmarks
         return None  
     
     # --------------------------------------------------------------------- #
     # Embed with precomputed box (float-safe, no uint8 quantization)
     # --------------------------------------------------------------------- #
-    def _embed_with_box(self, img, box: np.ndarray, debug_img: bool = False, origin: str = "original") -> torch.Tensor:
+    def _embed_with_box(self, img, box: np.ndarray, landmarks: Optional[np.ndarray] = None, debug_img: bool = False, origin: str = "original") -> torch.Tensor:
         """
         Crop the face using a precomputed bounding box via _extract_face_float
         (preserves float32 precision), then run through the ArcFace backbone.
         """
-        face_tensor = _extract_face_float(img, box, image_size=self.IMG_SIZE, margin=0)
+        face_tensor = _extract_face_float(img, box, landmarks, image_size=self.IMG_SIZE, margin=0)
         #print(f"Box reuse path: extracted face tensor shape: {face_tensor.shape}, dtype: {face_tensor.dtype}, min: {face_tensor.min().item()}, max: {face_tensor.max().item()}")
         
         #print(f"debug_img: {debug_img}, save_images_path: {self.save_images_path}, origin: {origin}")
@@ -639,20 +732,21 @@ class ArcFaceRecognizer:
             return emb, None
         
         # Detect box
-        box = self.detect_box(img)
+        box, landmarks = self.detect_box(img)
         if box is None:
             raise ValueError("MTCNN failed to detect a face in the image.")
         
         # Now run get embedding with the precomputed box (float-safe)
-        embedding = self.get_embedding(img, debug_img=debug_img, precomputed_box=box, origin=origin)
+        embedding = self.get_embedding(img, debug_img=debug_img, precomputed_box=box, precomputed_landmarks=landmarks, origin=origin)
         
-        return embedding.squeeze(0), box      
+        return embedding.squeeze(0), box, landmarks      
 
     # --------------------------------------------------------------------- #
     # get_embedding: original method, now with optional precomputed_box
     # --------------------------------------------------------------------- #
     def get_embedding(self, img, debug_img: bool = False, 
                       precomputed_box: Optional[np.ndarray] = None,
+                      precomputed_landmarks: Optional[np.ndarray] = None,
                       origin: str = "original"):
         """
         Return a 512-d embedding.
@@ -663,7 +757,7 @@ class ArcFaceRecognizer:
         """
         # --- Box reuse path: float-safe crop ---
         if precomputed_box is not None and self.use_mtcnn:
-            return self._embed_with_box(img, precomputed_box, debug_img=debug_img, origin=origin)
+            return self._embed_with_box(img, precomputed_box, precomputed_landmarks, debug_img=debug_img, origin=origin)
         
         tensor = preprocess_for_arcface(img, device=self.device,
                                             TARGET=(self.IMG_SIZE, self.IMG_SIZE))

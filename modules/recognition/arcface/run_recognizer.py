@@ -40,12 +40,13 @@ def get_embeddings_old(folder_path, image_files, img_size, face_recognizer_servi
     return embeddings_by_identity
 
 def get_embeddings(folder_path, image_files, img_size, face_recognizer_service,
-                   image_format='png', debug_img=False, precomputed_boxes=None):
+                   image_format='png', debug_img=False, precomputed_boxes=None, precomputed_landmarks=None):
     """
     Generate embeddings for all images in the folder.
     
     Args:
         precomputed_boxes: dict mapping identity -> bounding box (np.ndarray).
+        precomputed_landmarks: dict mapping identity -> landmarks (np.ndarray).
                            When provided, this box is reused instead of running
                            MTCNN detection, avoiding uint8 quantization on
                            watermarked images.
@@ -57,8 +58,11 @@ def get_embeddings(folder_path, image_files, img_size, face_recognizer_service,
         #print(f"min and max pixel values for image {img_path.name}: {img.min()} - {img.max()}")
         
         box = precomputed_boxes.get(identity) if precomputed_boxes else None
+        landmarks = precomputed_landmarks.get(identity) if precomputed_landmarks else None
         embedding = face_recognizer_service.get_embedding(img, debug_img=debug_img,
-                                                          precomputed_box=box, origin='watermarked' if box is not None else 'original')
+                                                          precomputed_box=box,
+                                                          precomputed_landmarks=landmarks,
+                                                          origin='watermarked' if box is not None else 'original')
         
         if embedding is not None:
             embeddings_by_identity[identity].append(embedding)
@@ -79,22 +83,24 @@ def get_embeddings_and_boxes(folder_path, image_files, img_size, face_recognizer
     """
     embeddings_by_identity = defaultdict(list)
     boxes_by_identity = {}
+    landmarks_by_identity = {}
     for img_path in tqdm(image_files, desc=f"Generating embeddings+boxes for {folder_path.name}"):
         identity = get_identity_from_filename(img_path.name)
         img = load_and_preprocess_image(img_path, img_size, image_format=image_format)
         
-        embedding, box = face_recognizer_service.get_embedding_and_box(img, debug_img=debug_img, origin='original')
+        embedding, box, landmarks = face_recognizer_service.get_embedding_and_box(img, debug_img=debug_img, origin='original')
         
         if embedding is not None:
             embeddings_by_identity[identity].append(embedding)
             if box is not None:
                 boxes_by_identity[identity] = box
+                landmarks_by_identity[identity] = landmarks
             else:
                 raise ValueError(f"Failed to get bounding box for image: {img_path} with identity: {identity}")
         else:
             raise ValueError(f"Failed to get embedding for image: {img_path} with identity: {identity}")
         
-    return embeddings_by_identity, boxes_by_identity
+    return embeddings_by_identity, boxes_by_identity, landmarks_by_identity
 
 def calculate_tar_at_far(far_list, frr_list, target_far=0.001): # Note: 0.01% = 0.0001, 0.1% = 0.001, 1% = 0.01
     """
@@ -187,7 +193,7 @@ def main() -> None:
                         help='Size of the image before processing, used for cropping or fitting')
     parser.add_argument('--metric', type=str, default='cosine',
                         choices=['cosine', 'euclidean'])
-    parser.add_argument('--thresholds', type=int, default=20000,
+    parser.add_argument('--thresholds', type=int, default=None,
                         help='Number of thresholds to evaluate for metrics calculation. If not set, all unique distances are used.')
     parser.add_argument('--format_evaluation', type=str, default='offline', 
                         choices=['offline', 'online'],
@@ -222,6 +228,9 @@ def main() -> None:
         backbone_name = 'ms1mv3_arcface_r100_fp16_backbone.pth'
         weight_path = Path(args.weight_path, backbone_name)
 
+    if args.thresholds is None and args.dataset == 'LFW':
+        print("LFW dataset detected with no specified number of thresholds. Setting thresholds to 20000")
+        args.thresholds = 20000
     # target far for reporting TAR, can be set to 0.0001 for 0.01% FAR, 0.001 for 0.1% FAR, or 0.01 for 1% FAR
     target_far = args.target_far
 
@@ -289,7 +298,7 @@ def main() -> None:
     # -----------------------------------------------------------------------
     if args.use_mtcnn:
         # Original templates: detect + embed, save boxes
-        templates_embs, template_boxes = get_embeddings_and_boxes(
+        templates_embs, template_boxes, template_landmarks = get_embeddings_and_boxes(
             templates_path, template_paths, args.img_size, face_recognizer_service, debug_img=args.debug_img)
         
         template_identities = set(templates_embs.keys())
@@ -299,20 +308,20 @@ def main() -> None:
         filtered_watermarked_paths = [p for p in watermarked_paths if get_identity_from_filename(p.name) in template_identities]
  
         # Original probes: detect + embed, save boxes
-        tests_embs, probe_boxes = get_embeddings_and_boxes(
+        tests_embs, probe_boxes, probe_landmarks = get_embeddings_and_boxes(
             test_path, filtered_image_paths, args.img_size, face_recognizer_service, debug_img=args.debug_img)
  
         # Watermarked templates: reuse template_boxes
         watermarked_templates_embs = get_embeddings(
             watermarked_templates, watermarked_templates_paths, args.img_size, 
             face_recognizer_service, image_format=image_format,
-            precomputed_boxes=template_boxes, debug_img=args.debug_img)
+            precomputed_boxes=template_boxes, precomputed_landmarks=template_landmarks, debug_img=args.debug_img)
         
         # Watermarked probes: reuse probe_boxes
         watermarked_embs = get_embeddings(
             watermarked_path, filtered_watermarked_paths, args.img_size, 
             face_recognizer_service, image_format=image_format,
-            debug_img=args.debug_img, precomputed_boxes=probe_boxes)    
+            debug_img=args.debug_img, precomputed_boxes=probe_boxes, precomputed_landmarks=probe_landmarks)    
 
     else:
         # No MTCNN: process everything independently (no box reuse needed)

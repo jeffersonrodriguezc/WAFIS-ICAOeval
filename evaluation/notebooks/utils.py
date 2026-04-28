@@ -8,6 +8,12 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from joblib import Parallel, delayed
 import os
+import itertools
+from scipy.stats import entropy, gaussian_kde
+from scipy.stats import wasserstein_distance
+from scipy.spatial.distance import jensenshannon
+from matplotlib.lines import Line2D
+from matplotlib.patches import Patch
 
 def read_distance_column(csv_path: Path) -> np.ndarray:
     """
@@ -71,7 +77,7 @@ def find_distance_files(dist_dir: Path, metric: str, mode: str, mtcnn: str) -> D
             ("WW", "genuine"):   [f"{metric}_genuine_distances_watermarked_both_online_{mtcnn}.csv"],
             ("WW", "impostor"):  [f"{metric}_impostor_distances_watermarked_both_online_{mtcnn}.csv"],
         }
-    else:
+    elif mode == 'offline':
         patterns = {
             ("OO", "genuine"):   [f"{metric}_genuine_distances_baseline_{mtcnn}.csv"],
             ("OO", "impostor"):  [f"{metric}_impostor_distances_baseline_{mtcnn}.csv"],
@@ -80,6 +86,10 @@ def find_distance_files(dist_dir: Path, metric: str, mode: str, mtcnn: str) -> D
             ("WW", "genuine"):   [f"{metric}_genuine_distances_watermarked_both_{mtcnn}.csv"],
             ("WW", "impostor"):  [f"{metric}_impostor_distances_watermarked_both_{mtcnn}.csv"],
         }
+        
+    else:
+        raise ValueError(f"Unknown mode: {mode}")
+
     out = {}
     for key, candidates in patterns.items():
         for name in candidates:
@@ -393,7 +403,6 @@ def get_metric_label(metric: str) -> str:
     """
     return METRIC_LABELS.get(metric, metric)
  
- 
 def plot_fr_metrics_by_train_dataset(
     df: pd.DataFrame,
     watermarking_algorithm: str,
@@ -667,7 +676,6 @@ def plot_fr_metrics_by_train_dataset(
 
     return fig
  
-
 def plot_wm_metrics_by_train_for_test(
     excel_path: str,
     save_path: str,
@@ -910,7 +918,7 @@ def plot_wm_metrics_by_train_for_test(
 
     # ---- Suptitle ----
     algo_str = ", ".join(algos)
-    fig.suptitle(f"Training-set & Modality comparison — {algo_str}", y=0.99, fontsize=12) 
+    fig.suptitle(f"Online-to-Offline Degradation in Watermark Quality and Recovery Across Training and Evaluation Domains", y=0.99, fontsize=12) 
 
     # ---- Leyenda global ----
     handles_labels = [ax.get_legend_handles_labels() for ax in axes.flat]
@@ -939,6 +947,415 @@ def plot_wm_metrics_by_train_for_test(
     plt.show()
     plt.close()
 
+def plot_wm_bar_psnr_by_algorithm_for_test(
+    excel_path: str,
+    save_path: str,
+    algorithms: Sequence[str] = ("stegaformer", "stegformer"),
+    inference_datasets: Sequence[str] = ("CFD", "ONOT_set1", "LFW"),
+    bpp_order: Sequence[int] = (1, 3, 6, 8),
+    dpi: int = 600,
+    col_width: float = 3.8,
+    row_height: float = 3.2,
+    bar_ylim_top: float = 1.02,
+    online_linewidth: float = 1.8,
+    offline_linewidth: float = 2.1,
+    online_band_alpha: float = 0.18,
+    offline_band_alpha: float = 0.28,
+    offline_linestyle: str = "--",
+    online_marker: str = "o",
+    offline_marker: str = "s",
+    marker_size: float = 5.0,
+    color_map_train: Optional[dict] = None,
+) -> None:
+    """
+    Compara BAR y PSNR para varios datasets de inferencia y dos algoritmos.
+
+    Organización de columnas:
+        1. BAR — StegaFormer
+        2. BAR — StegFormer
+        3. PSNR — StegaFormer
+        4. PSNR — StegFormer
+
+    Cada fila corresponde a un inference_dataset.
+    Las curvas comparan training_dataset y modalidad online/offline.
+    """
+
+    def _display(ds: str) -> str:
+        return display_names.get(ds, ds)
+
+    def _display_algo(algo: str) -> str:
+        return algorithm_display_names.get(algo.lower(), algo)
+
+    # ---- Cargar Excel ----
+    df = pd.read_excel(excel_path)
+
+    algos = list(algorithms)
+    datasets = list(inference_datasets)
+
+    n_rows = len(datasets)
+    n_cols = 4
+
+    # ---- Nombres visibles ----
+    display_names = {
+        "ONOT": "ONOT (set 2)",
+        "ONOT_set1": "ONOT (set 1)",
+        "CFD": "CFD",
+        "LFW": "LFW",
+    }
+
+    algorithm_display_names = {
+        "stegaformer": "StegaFormer",
+        "stegformer": "StegFormer",
+    }
+
+    # ---- Filtrar ----
+    dff = df[
+        (df["inference_dataset"].isin(datasets)) &
+        (df["algorithm"].isin(algos)) &
+        (df["bpp"].isin(bpp_order))
+    ].copy()
+
+    if dff.empty:
+        raise ValueError(
+            f"No rows found for inference_datasets={datasets} and algorithms={algos}."
+        )
+
+    # ---- Training datasets disponibles ----
+    train_datasets = sorted(dff["training_dataset"].dropna().unique().tolist())
+
+    if not train_datasets:
+        raise ValueError("No training_dataset found.")
+
+    print(f"[INFO] Training datasets found: {train_datasets}")
+
+    # ---- Color por training_dataset ----
+    if color_map_train is None:
+        base_palette = {
+            "celeba_hq": "#1f77b4",
+            "celeba": "#1f77b4",
+            "coco": "#ff7f0e",
+            "coco2017": "#ff7f0e",
+        }
+
+        color_map_train = {
+            ds: base_palette.get(ds.lower(), sns.color_palette("tab10")[i % 10])
+            for i, ds in enumerate(train_datasets)
+        }
+
+    # ---- Combinar std cuando haya varias filas ----
+    def _combine_std(std_series: pd.Series) -> float:
+        vals = pd.to_numeric(std_series, errors="coerce").dropna().to_numpy(dtype=float)
+
+        if vals.size == 0:
+            return np.nan
+
+        return float(np.sqrt(np.nanmean(vals ** 2)))
+
+    # ---- Agregación ----
+    agg = dff.groupby(
+        ["inference_dataset", "training_dataset", "algorithm", "bpp"]
+    ).agg({
+        "accuracy": "mean",
+        "accuracy_std": _combine_std,
+        "accuracy_offline": "mean",
+        "accuracy_offline_std": _combine_std,
+        "psnr": "mean",
+        "psnr_std": _combine_std,
+        "psnr_offline": "mean",
+        "psnr_offline_std": _combine_std,
+    }).reset_index()
+
+    agg["bpp"] = pd.Categorical(
+        agg["bpp"],
+        categories=list(bpp_order),
+        ordered=True
+    )
+
+    agg = agg.sort_values(
+        ["inference_dataset", "algorithm", "training_dataset", "bpp"]
+    ).reset_index(drop=True)
+
+    # ---- Límites globales ----
+    def _global_limits(
+        col_on: str,
+        col_off: str,
+        margin_lo: float = 0.0,
+        margin_hi: float = 0.0,
+        floor: Optional[float] = None,
+        ceil: Optional[float] = None,
+    ):
+        vals = pd.to_numeric(
+            pd.concat([agg[col_on], agg[col_off]]),
+            errors="coerce"
+        ).dropna().to_numpy(dtype=float)
+
+        if vals.size == 0:
+            return (0, 1)
+
+        lo = float(np.nanmin(vals)) - margin_lo
+        hi = float(np.nanmax(vals)) + margin_hi
+
+        if floor is not None:
+            lo = max(floor, lo)
+
+        if ceil is not None:
+            hi = min(ceil, hi)
+
+        return (lo, hi)
+
+    bar_ylim = (0.3, bar_ylim_top)
+
+    psnr_ylim = _global_limits(
+        "psnr",
+        "psnr_offline",
+        margin_lo=1.0,
+        margin_hi=1.0
+    )
+
+    # ---- Estilo visual ----
+    sns.set_theme(context="paper", style="whitegrid")
+
+    plt.rcParams.update({
+        "font.size": 10,
+        "axes.labelsize": 11,
+        "axes.titlesize": 11,
+        "legend.fontsize": 9,
+        "xtick.labelsize": 9,
+        "ytick.labelsize": 9,
+        "figure.dpi": dpi,
+        "savefig.dpi": dpi,
+    })
+
+    figsize = (col_width * n_cols, row_height * n_rows)
+
+    fig, axes = plt.subplots(
+        n_rows,
+        n_cols,
+        figsize=figsize,
+        sharex=True,
+        squeeze=False,
+        constrained_layout=False,
+    )
+
+    # ---- Helper para dibujar curvas ----
+    def _plot_trace(
+        ax,
+        x,
+        y,
+        ystd,
+        label,
+        color,
+        linestyle,
+        marker,
+        lw,
+        alpha_band,
+    ):
+        valid = ~(np.isnan(y) | np.isnan(x))
+
+        if valid.sum() == 0:
+            return None
+
+        line, = ax.plot(
+            x[valid],
+            y[valid],
+            marker=marker,
+            markersize=marker_size,
+            linestyle=linestyle,
+            linewidth=lw,
+            label=label,
+            color=color,
+        )
+
+        if ystd is not None:
+            ystd = np.where(np.isnan(ystd), 0.0, ystd)
+
+            ax.fill_between(
+                x[valid],
+                y[valid] - ystd[valid],
+                y[valid] + ystd[valid],
+                alpha=alpha_band,
+                linewidth=0,
+                color=color,
+            )
+
+        return line
+
+    # ---- Helper para cada panel ----
+    def _draw_panel(
+        ax,
+        inf_ds: str,
+        algo: str,
+        metric_key: str,
+        metric_std_key: str,
+        ylim,
+    ):
+        sub_ds = agg[
+            (agg["inference_dataset"] == inf_ds) &
+            (agg["algorithm"] == algo)
+        ]
+
+        for ds in train_datasets:
+            sub = sub_ds[sub_ds["training_dataset"] == ds].sort_values("bpp")
+
+            if sub.empty:
+                continue
+
+            x = sub["bpp"].astype(int).to_numpy()
+            color = color_map_train[ds]
+
+            # ONLINE
+            y_on = pd.to_numeric(
+                sub[metric_key],
+                errors="coerce"
+            ).to_numpy(dtype=float)
+
+            s_on = pd.to_numeric(
+                sub[metric_std_key],
+                errors="coerce"
+            ).to_numpy(dtype=float)
+
+            _plot_trace(
+                ax=ax,
+                x=x,
+                y=y_on,
+                ystd=s_on,
+                label=f"{ds} · online",
+                color=color,
+                linestyle="-",
+                marker=online_marker,
+                lw=online_linewidth,
+                alpha_band=online_band_alpha,
+            )
+
+            # OFFLINE
+            off_key = metric_key.split("_")[0]
+
+            y_off = pd.to_numeric(
+                sub[f"{off_key}_offline"],
+                errors="coerce"
+            ).to_numpy(dtype=float)
+
+            s_off = pd.to_numeric(
+                sub[f"{off_key}_offline_std"],
+                errors="coerce"
+            ).to_numpy(dtype=float)
+
+            _plot_trace(
+                ax=ax,
+                x=x,
+                y=y_off,
+                ystd=s_off,
+                label=f"{ds} · offline",
+                color=color,
+                linestyle=offline_linestyle,
+                marker=offline_marker,
+                lw=offline_linewidth,
+                alpha_band=offline_band_alpha,
+            )
+
+        ax.set_ylim(ylim)
+        ax.set_xticks(list(bpp_order))
+        ax.grid(True, linestyle="--", alpha=0.35)
+
+    # ---- Especificación de columnas ----
+    # Orden pedido:
+    # BAR StegaFormer | BAR StegFormer | PSNR StegaFormer | PSNR StegFormer
+    column_spec = [
+        ("accuracy", "accuracy_std", algos[0], "BAR", "BAR", bar_ylim),
+        ("accuracy", "accuracy_std", algos[1], "BAR", "BAR", bar_ylim),
+        ("psnr", "psnr_std", algos[0], "PSNR", "PSNR (dB)", psnr_ylim),
+        ("psnr", "psnr_std", algos[1], "PSNR", "PSNR (dB)", psnr_ylim),
+    ]
+
+    # ---- Dibujar ----
+    for row_idx, inf_ds in enumerate(datasets):
+        for col_idx, (mkey, mstd, algo, metric_title, ylabel, ylim) in enumerate(column_spec):
+            ax = axes[row_idx, col_idx]
+
+            _draw_panel(
+                ax=ax,
+                inf_ds=inf_ds,
+                algo=algo,
+                metric_key=mkey,
+                metric_std_key=mstd,
+                ylim=ylim,
+            )
+
+            # Título de columna solo en la primera fila
+            if row_idx == 0:
+                ax.set_title(f"{metric_title} — {_display_algo(algo)}")
+
+            # Y-label
+            if col_idx == 0:
+                ax.set_ylabel(f"{_display(inf_ds)}\n{ylabel}")
+            elif col_idx == 2:
+                ax.set_ylabel(ylabel)
+            else:
+                ax.set_ylabel("")
+
+            # X-label solo en la última fila
+            if row_idx == n_rows - 1:
+                ax.set_xlabel("Bits per pixel (BPP)")
+            else:
+                ax.set_xlabel("")
+
+    # ---- Ajustar ejes Y compartidos manualmente por tipo de métrica ----
+    # Columnas 0 y 1: BAR
+    for row_idx in range(n_rows):
+        axes[row_idx, 0].set_ylim(bar_ylim)
+        axes[row_idx, 1].set_ylim(bar_ylim)
+
+    # Columnas 2 y 3: PSNR
+    for row_idx in range(n_rows):
+        axes[row_idx, 2].set_ylim(psnr_ylim)
+        axes[row_idx, 3].set_ylim(psnr_ylim)
+
+    # ---- Título general ----
+    fig.suptitle(
+        "Online-to-Offline Degradation in Watermark Quality and Recovery Across Training and Evaluation Domains",
+        y=0.965,
+        fontsize=16,
+    )
+
+    # ---- Leyenda global ----
+    handles_labels = [ax.get_legend_handles_labels() for ax in axes.flat]
+
+    handles = sum((hl[0] for hl in handles_labels), [])
+    labels = sum((hl[1] for hl in handles_labels), [])
+
+    seen = set()
+    uniq = [
+        (h, l)
+        for h, l in zip(handles, labels)
+        if not (l in seen or seen.add(l))
+    ]
+
+    fig.legend(
+        [h for h, _ in uniq],
+        [l for _, l in uniq],
+        loc="lower center",
+        ncol=min(len(uniq), 4),
+        frameon=False,
+        bbox_to_anchor=(0.5, -0.01),
+    )
+
+    plt.tight_layout(rect=(0, 0.03, 1, 0.97))
+
+    # ---- Guardar ----
+    if save_path is not None:
+        save_dir = os.path.dirname(save_path)
+
+        if save_dir:
+            os.makedirs(save_dir, exist_ok=True)
+
+        plt.savefig(
+            save_path,
+            bbox_inches="tight",
+            dpi=dpi,
+        )
+
+    plt.show()
+    plt.close()
 
 def plot_wm_metrics_from_excel(
     excel_path: str,
@@ -962,8 +1379,7 @@ def plot_wm_metrics_from_excel(
     offline_linestyle: str = "--",            # más diferenciación visual
     online_marker: str = "o",
     offline_marker: str = "s",
-    marker_size: float = 5.0,
-) -> None:
+    marker_size: float = 5.0,) -> None:
     """
     Plot ACC, PSNR, SSIM (online & offline) vs BPP para uno o varios algoritmos.
     - Leyenda global abajo, título con Train/Test.
@@ -1165,7 +1581,6 @@ def plot_wm_metrics_from_excel(
         plt.show()
     plt.close()
 
-
 def get_summary_by_scenario(df: pd.DataFrame) -> pd.DataFrame:
     """
     Genera un resumen de las métricas principales agrupadas por escenario.
@@ -1233,7 +1648,6 @@ def get_summary_by_scenario(df: pd.DataFrame) -> pd.DataFrame:
     summary_df = pd.DataFrame(summary_records)
     
     return summary_df
-
 
 def calcular_threshold_por_bpp_y_condition(
     df_dataset: pd.DataFrame, 
@@ -1408,8 +1822,6 @@ def calcular_tar(df_genuine: pd.DataFrame, threshold: float) -> float:
     # Calculamos el TAR
     tar_rate = (true_accepts / len(df_genuine)) * 100.0
     return tar_rate
-
-# ----------------- PARTE 2: Función de Plotting Principal -----------------
 
 def plot_tar_vs_bpp(
     df_long: pd.DataFrame, 
@@ -1672,13 +2084,6 @@ def plot_tar_vs_bpp_subplots(
     plt.tight_layout(rect=[0, 0, 0.9, 1]) 
     plt.show()
 
-
-import matplotlib.pyplot as plt
-import seaborn as sns
-import pandas as pd
-import numpy as np
-
-
 def plot_distance_distributions(df, test_dataset):
     """
     Plot genuine and impostor distance distributions for each BPP and recognizer.
@@ -1792,3 +2197,1086 @@ def plot_distance_distributions(df, test_dataset):
     )
 
     return fig
+
+def plot_distance_distributions_multi_dataset(df, test_datasets, bpp=6, mode="online"):
+    """
+    Plot genuine and impostor distance distributions for Stegformer COCO
+    at a fixed BPP across multiple test datasets.
+ 
+    Each row corresponds to one test dataset. Each column corresponds to
+    one FR system (ArcFace, FaceNet). All plots show OO, OW, and WW
+    conditions with genuine (solid) and impostor (dashed) distributions.
+ 
+    Parameters
+    ----------
+    df : pd.DataFrame
+        DataFrame with columns: watermark, recognizer, metric, train_dataset,
+        test_dataset, bpp, condition (OO/OW/WW), pair_type (genuine/impostor),
+        distance, experiment, mtcnn, mode, path.
+    test_datasets : list of str
+        List of test dataset names to include, one per row
+        (e.g. ['CFD', 'ONOT_set1', 'LFW', 'SCface']).
+    bpp : int, optional
+        Bits per pixel to display. Default is 6.
+    mode : str, optional
+        Evaluation mode to filter ('online' or 'offline'). Default is 'online'.
+ 
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+    """
+    # Filter: Stegformer, COCO, selected BPP and mode
+    mask = (
+        (df["watermark"].str.lower().str.contains("stegformer"))
+        & (df["train_dataset"].str.lower().str.contains("coco"))
+        & (df["bpp"] == bpp)
+        & (df["mode"] == mode)
+        & (df["test_dataset"].isin(test_datasets))
+    )
+    df_filtered = df[mask].copy()
+ 
+    if df_filtered.empty:
+        raise ValueError(
+            f"No data found for Stegformer COCO at {bpp} bpp ({mode} mode) "
+            f"with test datasets {test_datasets}. Check filter criteria."
+        )
+ 
+    recognizers = sorted(df_filtered["recognizer"].unique())
+    conditions = ["OO", "OW", "WW"]
+ 
+    n_rows = len(test_datasets)
+    n_cols = len(recognizers)
+ 
+    # Color palette per condition
+    palette = {"OO": "#1f77b4", "OW": "#ff7f0e", "WW": "#2ca02c"}
+ 
+    fig, axes = plt.subplots(
+        n_rows, n_cols,
+        figsize=(7 * n_cols, 3.2 * n_rows),
+        sharex=False, sharey=False,
+        constrained_layout=True,
+    )
+ 
+    # Ensure axes is always 2D
+    if n_rows == 1 and n_cols == 1:
+        axes = np.array([[axes]])
+    elif n_rows == 1:
+        axes = axes[np.newaxis, :]
+    elif n_cols == 1:
+        axes = axes[:, np.newaxis]
+ 
+    for row_idx, test_ds in enumerate(test_datasets):
+        for col_idx, rec in enumerate(recognizers):
+            ax = axes[row_idx, col_idx]
+            subset = df_filtered[
+                (df_filtered["test_dataset"] == test_ds)
+                & (df_filtered["recognizer"] == rec)
+            ]
+ 
+            for cond in conditions:
+                for pair_type in ["genuine", "impostor"]:
+                    data = subset[
+                        (subset["condition"] == cond)
+                        & (subset["pair_type"] == pair_type)
+                    ]["distance"]
+ 
+                    if data.empty:
+                        continue
+ 
+                    ls = "-" if pair_type == "genuine" else "--"
+                    label = f"{pair_type.capitalize()}, {cond}"
+ 
+                    sns.kdeplot(
+                        data,
+                        ax=ax,
+                        color=palette[cond],
+                        linestyle=ls,
+                        linewidth=1.4,
+                        label=label,
+                        warn_singular=False,
+                    )
+ 
+            ax.set_ylabel("Density", fontsize=9)
+            ax.set_xlabel("Cosine Distance", fontsize=9)
+            ax.set_title(
+                f"{test_ds} — {rec.capitalize()}",
+                fontsize=10, fontweight="bold",
+            )
+            ax.tick_params(labelsize=8)
+            ax.grid(True, linestyle="--", alpha=0.4)
+ 
+    # Single shared legend at the top
+    handles, labels = axes[0, 0].get_legend_handles_labels()
+ 
+    # Remove per-subplot legends
+    for ax_row in axes:
+        for ax in ax_row:
+            leg = ax.get_legend()
+            if leg is not None:
+                leg.remove()
+ 
+    fig.legend(
+        handles, labels,
+        loc="lower center",
+        ncol=len(conditions) * 2,
+        fontsize=9,
+        frameon=True,
+        title="Pair type, Condition",
+        title_fontsize=9,
+        bbox_to_anchor=(0.5, -0.05),
+    )
+ 
+    fig.suptitle(
+        f"Genuine & Impostor Distance Distributions — Stegformer "
+        f"(train: COCO, {bpp} bpp, {mode})",
+        fontsize=13,
+        fontweight="bold",
+        y=1.05,
+    )
+ 
+    return fig
+
+def compute_fr_distributions_stats(distances_df):
+    
+    def kl_from_kde(p_samples, q_samples, n_grid=500):
+        """Estima KL(P||Q) via KDE sobre grilla compartida."""
+        min_val = min(p_samples.min(), q_samples.min())
+        max_val = max(p_samples.max(), q_samples.max())
+        grid = np.linspace(min_val, max_val, n_grid)
+        
+        p_kde = gaussian_kde(p_samples)(grid)
+        q_kde = gaussian_kde(q_samples)(grid)
+        
+        # Suavizado mínimo para evitar log(0)
+        p_kde += 1e-10
+        q_kde += 1e-10
+        
+        p_kde /= p_kde.sum()
+        q_kde /= q_kde.sum()
+        
+        return entropy(p_kde, q_kde)
+
+    def js_from_kde(p_samples, q_samples, n_grid=500):
+        """Estimates JS(P||Q) via KDE on shared grid. Returns value in [0,1]."""
+        min_val = min(p_samples.min(), q_samples.min())
+        max_val = max(p_samples.max(), q_samples.max())
+        grid = np.linspace(min_val, max_val, n_grid)
+        dx = grid[1] - grid[0]
+        
+        p_kde = gaussian_kde(p_samples)(grid)
+        q_kde = gaussian_kde(q_samples)(grid)
+        
+        p_kde += 1e-10
+        q_kde += 1e-10
+
+        p_prob = p_kde * dx
+        q_prob = q_kde * dx
+        
+        #p_kde /= p_kde.sum()
+        #q_kde /= q_kde.sum()
+
+        p_prob /= p_prob.sum()
+        q_prob /= q_prob.sum()
+        
+        # jensenshannon returns sqrt(JS) by default, square it to get JS
+        return jensenshannon(p_kde, q_kde, base=2) ** 2
+    
+    group_keys = ['watermark', 'recognizer', 'train_dataset', 'test_dataset', 'bpp', 'mode']
+    records = []
+    
+    for keys, grp in distances_df.groupby(group_keys):
+        row = dict(zip(group_keys, keys))
+        
+        for pair in ['genuine', 'impostor']:
+            oo = grp[(grp['condition'] == 'OO') & (grp['pair_type'] == pair)]['distance']
+            ow = grp[(grp['condition'] == 'OW') & (grp['pair_type'] == pair)]['distance']
+            ww = grp[(grp['condition'] == 'WW') & (grp['pair_type'] == pair)]['distance']
+            
+            if len(oo) < 10:
+                continue
+            
+            for cond_name, cond_dist in [('OW', ow), ('WW', ww)]:
+                if len(cond_dist) < 10:
+                    continue
+
+                pooled_std = np.sqrt((oo.std()**2 + cond_dist.std()**2) / 2)
+                r = row.copy()
+                r['pair_type'] = pair
+                r['condition'] = cond_name
+                r['kl_divergence'] = kl_from_kde(oo.values, cond_dist.values)
+                r['delta_mean'] = cond_dist.mean() - oo.mean()
+                r['wasserstein'] =  wasserstein_distance(oo.values, cond_dist.values)
+                r['js_divergence']  = js_from_kde(oo.values, cond_dist.values)
+                r['cohen_d']     = (cond_dist.mean() - oo.mean()) / (pooled_std + 1e-10)
+                r['n_oo'] = len(oo)
+                r['n_cond'] = len(cond_dist)
+                records.append(r)
+    
+    return pd.DataFrame(records)
+
+def join_fr_dist_stats_wm_metrics_by_condition_pair(df_dis_stats, df_wm_long, condition='WW', pair_type='genuine'):
+    if condition == "both":
+        df_dis_stats_join = df_dis_stats[
+        (df_dis_stats['pair_type'] == pair_type)
+        ][['watermark','train_dataset','test_dataset','bpp','mode','recognizer','condition',
+           'kl_divergence','delta_mean','wasserstein','cohen_d','js_divergence']]
+    
+    else:
+        df_dis_stats_join = df_dis_stats[
+            (df_dis_stats['pair_type'] == pair_type) & 
+            (df_dis_stats['condition'] == condition)
+        ][['watermark','train_dataset','test_dataset','bpp','mode','recognizer', 'condition',
+           'kl_divergence','delta_mean','wasserstein','cohen_d','js_divergence']]
+
+    # Join
+    df_merged = df_wm_long.merge(
+        df_dis_stats_join,
+        on=['watermark','train_dataset','test_dataset','bpp','mode'],
+        how='inner'
+    )
+
+    #print(df_merged.shape)
+    #df_merged[['watermark','recognizer','mode','train_dataset','test_dataset','bpp']].drop_duplicates().shape
+
+    return df_merged
+
+def normalize_col(series, invert=False, min_val=None, max_val=None):
+    if min_val is not None and max_val is not None:
+        norm = (series - min_val) / (max_val - min_val + 1e-10)
+    else:
+        mn, mx = series.min(), series.max()
+        norm = (series - mn) / (mx - mn + 1e-10)
+    return 1 - norm if invert else norm
+
+def add_normalized_wasserstein(
+    df_agg,
+    distances_range,
+    eps=1e-10,
+    inverse_scope="global"
+):
+    """
+    Adds two columns to df_agg:
+
+    1. ws_norm:
+       Wasserstein distance normalized by the OO genuine distance range
+       for each watermark, bpp, recognizer and mode.
+
+    2. ws_inv_norm:
+       Inverted normalized Wasserstein score.
+       ws_norm = 0 -> ws_inv_norm = 1
+       largest ws_norm -> ws_inv_norm = 0
+
+    Parameters
+    ----------
+    df_agg : pd.DataFrame
+        Aggregated dataframe containing the column 'wasserstein'.
+
+    distances_range : pd.DataFrame
+        Dataframe containing min_distance and max_distance for OO genuine scores.
+
+    eps : float
+        Small constant to avoid division by zero.
+
+    inverse_scope : str
+        "global"     -> inverse normalization using max ws_norm over the full dataframe.
+        "recognizer" -> inverse normalization separately per recognizer.
+        "mode"       -> inverse normalization separately per recognizer and mode.
+
+    Returns
+    -------
+    pd.DataFrame
+        Copy of df_agg with added columns:
+        - genuine_ref_range
+        - ws_norm
+        - ws_inv_norm
+    """
+
+    df = df_agg.copy()
+
+    # 1. Keep only OO genuine ranges as reference
+    ref = distances_range[
+        (distances_range["condition"] == "OO") &
+        (distances_range["pair_type"] == "genuine")
+    ].copy()
+
+    # 2. Compute reference range
+    ref["genuine_ref_range"] = ref["max_distance"] - ref["min_distance"]
+
+    # 3. Keep only the columns needed for the merge
+    merge_keys = ["watermark", "bpp", "recognizer", "mode"]
+
+    ref = ref[
+        merge_keys + ["min_distance", "max_distance", "genuine_ref_range"]
+    ].drop_duplicates(subset=merge_keys)
+
+    # 4. Merge OO genuine range into df_agg
+    df = df.merge(
+        ref,
+        on=merge_keys,
+        how="left",
+        validate="many_to_one"
+    )
+
+    # 5. Check missing references
+    missing_ref = df["genuine_ref_range"].isna().sum()
+    if missing_ref > 0:
+        print(f"Warning: {missing_ref} rows did not find OO genuine reference range.")
+
+    # 6. Normalize Wasserstein by the OO genuine range
+    df["ws_norm"] = df["wasserstein"] / (df["genuine_ref_range"] + eps)
+
+    # 7. Inverted normalization
+    if inverse_scope == "global":
+        max_ws = df["ws_norm"].max()
+        df["ws_inv_norm"] = 1 - (df["ws_norm"] / (max_ws + eps))
+    
+    elif inverse_scope == "traditional":
+        max_ws = 1.0
+        df["ws_inv_norm"] = 1 - (df["ws_norm"] / (max_ws + eps))
+
+    elif inverse_scope == "recognizer":
+        df["ws_inv_norm"] = df.groupby("recognizer")["ws_norm"].transform(
+            lambda s: 1 - (s / (s.max() + eps))
+        )
+
+    elif inverse_scope == "mode":
+        df["ws_inv_norm"] = df.groupby(["recognizer", "mode"])["ws_norm"].transform(
+            lambda s: 1 - (s / (s.max() + eps))
+        )
+
+    else:
+        raise ValueError("inverse_scope must be 'global', 'recognizer', or 'mode'.")
+
+    # 8. Clip numerical noise
+    df["ws_inv_norm"] = df["ws_inv_norm"].clip(0, 1)
+
+    return df
+
+def aggregate_for_plots(df_merged):
+    """
+    Aggregates by watermark x bpp x recognizer x mode.
+    Online and offline are kept separate for spider plot comparison.
+    """
+    df_agg = df_merged.groupby(['watermark', 'bpp', 'recognizer', 'mode', 'condition']).agg(
+        accuracy=('accuracy', 'mean'),
+        psnr=('psnr', 'mean'),
+        ssim=('ssim', 'mean'),
+        kl_divergence=('kl_divergence', 'mean'),
+        wasserstein=('wasserstein', 'mean'),
+        js_divergence=('js_divergence', 'mean'),
+    ).reset_index()
+
+    # Normalize globally across all rows so scales are comparable
+    df_agg['acc_norm']  = normalize_col(df_agg['accuracy'])
+    df_agg['psnr_norm'] = normalize_col(df_agg['psnr'])
+    df_agg['kl_inv_norm'] = normalize_col(df_agg['kl_divergence'], invert=True, min_val=0, max_val=df_agg['kl_divergence'].max())
+    #df_agg['ws_inv_norm'] = normalize_col(df_agg['wasserstein'],    invert=True, min_val=0, max_val=df_agg['wasserstein'].max())
+    df_agg['js_inv_norm'] = 1 - df_agg['js_divergence']
+
+    return df_agg
+
+def plot_spider(df_agg, dist_metric='js_inv_norm', condition='OW', save_path='spider_trilema'):
+    """
+    4 spider plots: one per (watermark x recognizer) combination.
+    Each spider shows 4 bpp x 2 modes (online/offline).
+    Line style: solid=online, dashed=offline.
+    Marker: circle=online, square=offline.
+    Color: one per bpp.
+    Axes:
+        - Recovery BAR (%): bit accuracy rate displayed as percentage
+        - Imperceptibility PSNR (dB): real dB values
+        - FR Preservation: normalized [0,1], higher=better
+    Grid levels 0.25, 0.50, 0.75:
+        From axis-level intersection, draw dashed line perpendicular to axis
+        in clockwise direction, length proportional to level.
+        Value label placed at midpoint of that segment, rotated along it.
+    Level 1.00: value placed directly at axis vertex.
+    """
+    df_agg = df_agg.copy()
+
+    if condition != 'both':
+        df_agg = df_agg[df_agg['condition'] == condition].copy()
+
+    if df_agg.empty:
+        raise ValueError(f"No hay datos para condition='{condition}'")
+    
+    metric_names = {
+        'kl_inv_norm': 'FR Preservation\n(inv. KL Divergence)',
+        'js_inv_norm': 'FR Preservation\n(inv. Jensen-Shannon)',
+        'ws_inv_norm': 'FR Preservation\n(1 - normalized Wasserstein)',
+    }
+    fr_label = metric_names.get(dist_metric, f'FR Preservation\n({dist_metric})')
+    categories = ['Recovery BAR\n(%)', 'Imperceptibility PSNR\n(dB)', fr_label]
+
+    N = len(categories)
+    angles = np.linspace(0, 2 * np.pi, N, endpoint=False).tolist()
+
+    bpp_colors   = {1: '#2196F3', 3: '#4CAF50', 6: '#FF9800', 8: '#F44336'}
+    mode_styles  = {'online': '-',  'offline': '--'}
+    mode_markers = {'online': 'o',  'offline': '*'}
+
+    watermarks  = sorted(df_agg['watermark'].unique())
+    recognizers = sorted(df_agg['recognizer'].unique())
+
+    psnr_min = df_agg['psnr'].min()
+    psnr_max = df_agg['psnr'].max()
+    acc_min  = df_agg['accuracy'].min()
+    acc_max  = df_agg['accuracy'].max()
+    ws_norm_max = df_agg['ws_norm'].max() if dist_metric == 'ws_inv_norm' else None
+    ws_norm_min = df_agg['ws_norm'].min() if dist_metric == 'ws_inv_norm' else None
+
+    grid_levels  = [0.25, 0.50, 0.75]
+    chord_factor = 0.35  # length of perpendicular segment = level * chord_factor
+
+    def get_label(axis_idx, level):
+        """Returns real-value label for a given axis and normalized level."""
+        if axis_idx == 0:
+            val = (acc_min + level * (acc_max - acc_min)) * 100
+            return f"{val:.0f}%"
+
+        elif axis_idx == 1:
+            val = psnr_min + level * (psnr_max - psnr_min)
+            return f"{val:.1f}dB"
+
+        else:
+            if dist_metric == 'ws_inv_norm':
+                # level = 1 means minimum Wasserstein change
+                # level = 0 means maximum Wasserstein change
+                ws_at_level = ws_norm_max - level * (ws_norm_max - ws_norm_min)
+                preservation = (1 - ws_at_level) * 100
+                return f"{preservation:.0f}%"
+
+            else:
+                return f"{level * 100:.0f}%"
+
+    fig, axes = plt.subplots(
+        len(recognizers), len(watermarks),
+        figsize=(7 * len(watermarks), 6 * len(recognizers)),
+        subplot_kw=dict(polar=True)
+    )
+
+    if len(recognizers) == 1 and len(watermarks) == 1:
+        axes = np.array([[axes]])
+    elif len(recognizers) == 1:
+        axes = axes.reshape(1, -1)
+    elif len(watermarks) == 1:
+        axes = axes.reshape(-1, 1)
+
+    for r_i, rec in enumerate(recognizers):
+        for w_i, wm in enumerate(watermarks):
+            ax  = axes[r_i, w_i]
+            sub = df_agg[(df_agg['recognizer'] == rec) & (df_agg['watermark'] == wm)]
+
+            # Concentric circles — more visible
+            ax.set_yticklabels([])
+            ax.set_yticks(grid_levels + [1.0])
+            ax.grid(True, color='gray', linestyle=':', linewidth=1.0, alpha=0.6)
+
+            # Perpendicular segments per axis per level
+            for a_i, angle in enumerate(angles):
+                for level in grid_levels:
+                    # Start point P
+                    px = level * np.cos(angle)
+                    py = level * np.sin(angle)
+
+                    # Clockwise perpendicular direction
+                    dx = np.sin(angle)
+                    dy = -np.cos(angle)
+
+                    # Length to reach outer circle (r=1.0)
+                    t = np.sqrt(1 - level**2)
+
+                    # End point on outer circle
+                    ex = px + t * dx
+                    ey = py + t * dy
+
+                    # Convert to polar
+                    r_start = level
+                    t_start = angle
+                    r_end   = np.sqrt(ex**2 + ey**2)
+                    t_end   = np.arctan2(ey, ex)
+
+                    ax.plot([t_start, t_end], [r_start, r_end],
+                            color='dimgray', linestyle='--',
+                            linewidth=1.0, alpha=0.75)
+
+                    # Midpoint label
+                    mx = (px + ex) / 2
+                    my = (py + ey) / 2
+                    mr = np.sqrt(mx**2 + my**2)
+                    mt = np.arctan2(my, mx)
+
+                    chord_deg = np.degrees(np.arctan2(dy, dx))
+                    if 90 < chord_deg % 360 < 270:
+                        chord_deg += 180
+
+                    ax.text(mt, mr, get_label(a_i, level),
+                            ha='center', va='bottom',
+                            fontsize=5.5, color='#222222',
+                            rotation=chord_deg,
+                            rotation_mode='anchor',
+                            bbox=dict(boxstyle='round,pad=0.1',
+                                    facecolor='white',
+                                    edgecolor='none',
+                                    alpha=0.8))
+
+                # Level 1.0 at vertex
+                ax.text(angle, 1.08, get_label(a_i, 1.0),
+                        ha='center', va='bottom', fontsize=5.5, color='#222222',
+                        bbox=dict(boxstyle='round,pad=0.1',
+                                facecolor='white', edgecolor='none', alpha=0.8))
+
+            # Data lines
+            plot_angles = angles + [angles[0]]
+            for _, row in sub.iterrows():
+                values = [row['acc_norm'], row['psnr_norm'], row[dist_metric]]
+                values += values[:1]
+
+                ax.plot(
+                    plot_angles, values,
+                    linestyle=mode_styles[row['mode']],
+                    color=bpp_colors[row['bpp']],
+                    linewidth=1.8,
+                    marker=mode_markers[row['mode']],
+                    markersize=6,
+                    alpha=0.85
+                )
+                ax.fill(plot_angles, values,
+                        color=bpp_colors[row['bpp']],
+                        alpha=0.04)
+
+            ax.set_xticks(angles)
+            ax.set_xticklabels(categories, fontsize=9)
+            ax.tick_params(axis='x', pad=21)
+            ax.set_ylim(0, 1.15)
+            ax.set_title(f'{wm.capitalize()} — {rec.capitalize()}',
+                         fontsize=11, fontweight='bold', pad=20)
+
+    # Legend
+    from matplotlib.lines import Line2D
+    from matplotlib.patches import Patch
+
+    legend_elements = []
+    for bpp, color in bpp_colors.items():
+        legend_elements.append(
+            Patch(facecolor=color, edgecolor='k', linewidth=0.5, label=f'{bpp} bpp')
+        )
+    legend_elements.append(
+        Line2D([0], [0], color='gray', linestyle='-',
+               marker='o', markersize=6, label='Online')
+    )
+    legend_elements.append(
+        Line2D([0], [0], color='gray', linestyle='--',
+               marker='*', markersize=6, label='Offline')
+    )
+
+    fig.legend(
+        handles=legend_elements,
+        loc='lower center',
+        ncol=len(bpp_colors) + 2,
+        fontsize=9,
+        bbox_to_anchor=(0.5, -0.03),
+        framealpha=0.9,
+        title='BPP and Mode',
+        title_fontsize=9
+    )
+
+    fig.suptitle(
+    f'Watermarking Trade-off Trilema — Condition: {condition}\n'
+    '(normalized [0,1] internally — axis labels show real values)',
+    fontsize=13, fontweight='bold', y=1.01
+    )
+
+    plt.tight_layout()
+    plt.savefig(f'{save_path}.pdf', bbox_inches='tight', dpi=300)
+    plt.savefig(f'{save_path}.png', bbox_inches='tight', dpi=300)
+    plt.show()
+
+# ============================================================
+# PLOT 2: PARETO 2D
+# ============================================================
+
+def plot_pareto_2d(df_merged,
+                   fr_metric='kl_divergence',
+                   condition='together',
+                   psnr_threshold=None,
+                   save_path='pareto_2d'):
+    """
+    Pareto frontier plot: PSNR (imperceptibility) vs ACC (recovery).
+    Color encodes FR impact metric (log scale).
+    Size encodes |delta_mean| of genuine pairs.
+
+    Parameters
+    ----------
+    df_merged       : DataFrame with columns watermark, recognizer, psnr,
+                      accuracy, delta_mean, condition, and fr_metric column.
+    fr_metric       : FR impact column to use for color encoding.
+                      e.g. 'kl_divergence', 'js_divergence', 'wasserstein'.
+    condition       : 'together' → one row, all conditions plotted together.
+                      'split'    → two rows: OW on top, WW on bottom.
+    psnr_threshold  : float or None. If given, shades PSNR zones.
+    save_path       : output filename (no extension).
+    """
+
+    metric_labels = {
+        'kl_divergence': 'log₁₀(KL Divergence)',
+        'js_divergence': 'log₁₀(JS Divergence)',
+        'wasserstein':   'log₁₀(Wasserstein)',
+    }
+    fr_label    = metric_labels.get(fr_metric, f'log₁₀({fr_metric})')
+    wm_markers  = {'stegformer': 'o', 'stegaformer': '^'}
+    recognizers = sorted(df_merged['recognizer'].unique())
+
+    # Row structure
+    row_conditions = ['OW', 'WW'] if condition == 'split' else ['together']
+    n_rows = len(row_conditions)
+    n_cols = len(recognizers)
+
+    fig, axes = plt.subplots(n_rows, n_cols,
+                              figsize=(7 * n_cols, 5 * n_rows),
+                              squeeze=False)
+
+    # Global size scaling
+    abs_dm      = df_merged['delta_mean'].abs()
+    size_scaled = 40 + 200 * (abs_dm - abs_dm.min()) / (abs_dm.max() - abs_dm.min() + 1e-10)
+
+    # Global color scale
+    log_metric  = np.log10(df_merged[fr_metric] + 1e-6)
+    global_vmin = log_metric.min()
+    global_vmax = log_metric.max()
+
+    for r_i, cond in enumerate(row_conditions):
+        for c_i, rec in enumerate(recognizers):
+            ax = axes[r_i, c_i]
+
+            # Filter
+            mask = df_merged['recognizer'] == rec
+            if cond != 'together':
+                mask &= df_merged['condition'] == cond
+            sub = df_merged[mask].copy()
+
+            sub['fr_log'] = np.log10(sub[fr_metric] + 1e-6)
+            sub['size']   = size_scaled[sub.index]
+
+            # PSNR threshold zones
+            if psnr_threshold is not None:
+                psnr_min = sub['psnr'].min() - 2
+                psnr_max = sub['psnr'].max() + 2
+                ax.axvspan(psnr_min, psnr_threshold,
+                           color='#ffcccc', alpha=0.35, zorder=0)
+                ax.axvspan(psnr_threshold, psnr_max,
+                           color='#ccffcc', alpha=0.35, zorder=0)
+                ax.axvline(psnr_threshold, color='gray',
+                           linestyle='--', linewidth=1.0, alpha=0.7)
+
+            # Scatter per watermark
+            sc = None
+            for wm in sorted(sub['watermark'].unique()):
+                wsub = sub[sub['watermark'] == wm]
+                sc = ax.scatter(
+                    wsub['psnr'], wsub['accuracy'],
+                    c=wsub['fr_log'],
+                    cmap='RdYlGn_r',
+                    vmin=global_vmin, vmax=global_vmax,
+                    s=wsub['size'],
+                    marker=wm_markers[wm],
+                    alpha=0.85,
+                    edgecolors='k', linewidths=0.5,
+                    zorder=2
+                )
+                for _, row in wsub.iterrows():
+                    ax.annotate(
+                        f"{int(row['bpp'])}",
+                        (row['psnr'], row['accuracy']),
+                        fontsize=6, alpha=0.75,
+                        xytext=(3, 3), textcoords='offset points'
+                    )
+
+            row_label = 'All Conditions' if cond == 'together' else cond
+            ax.set_title(f'{rec.capitalize()} — {row_label}',
+                         fontsize=11, fontweight='bold')
+            ax.set_xlabel('PSNR — Imperceptibility (dB)', fontsize=9)
+            ax.set_ylabel('BAR — Message Recovery Rate', fontsize=9)
+            ax.grid(True, alpha=0.3, zorder=1)
+            ax.set_xlim(sub['psnr'].min() - 1, sub['psnr'].max() + 1)
+            ax.text(0.02, 0.02, 'Size = |Δmean FR (genuine)|',
+                    transform=ax.transAxes, fontsize=7, alpha=0.6)
+
+            if sc is not None:
+                cbar = plt.colorbar(sc, ax=ax, pad=0.02)
+                cbar.set_label(fr_label, fontsize=8)
+
+    # Shared legend — algorithms only, black markers, same size
+    from matplotlib.lines import Line2D
+    from matplotlib.patches import Patch
+
+    legend_elements = [
+        Line2D([0], [0], marker=wm_markers[wm], color='k',
+               markerfacecolor='k', markersize=7,
+               linestyle='None', label=wm.capitalize())
+        for wm in sorted(df_merged['watermark'].unique())
+    ]
+    if psnr_threshold is not None:
+        legend_elements += [
+            Patch(facecolor='#ffcccc', alpha=0.6,
+                  label=f'PSNR < {psnr_threshold} dB — FR affected'),
+            Patch(facecolor='#ccffcc', alpha=0.6,
+                  label=f'PSNR ≥ {psnr_threshold} dB — FR safe'),
+        ]
+
+    fig.legend(
+        handles=legend_elements,
+        loc='lower center',
+        ncol=len(legend_elements),
+        fontsize=9,
+        bbox_to_anchor=(0.5, -0.08),
+        framealpha=0.9,
+        title='Watermarking Algorithm',
+        title_fontsize=9
+    )
+
+    cond_title = 'OW vs WW — Split View' if condition == 'split' else 'All Conditions Together'
+    fig.suptitle(
+        f'Pareto Frontier: PSNR vs Recovery | Color = {fr_label} | Size = |Δmean FR|\n'
+        f'{cond_title} — Genuine Pairs',
+        fontsize=12, fontweight='bold'
+    )
+
+    plt.tight_layout()
+    plt.savefig(f'{save_path}.pdf', bbox_inches='tight', dpi=300)
+    plt.savefig(f'{save_path}.png', bbox_inches='tight', dpi=300)
+    plt.show()
+
+def plot_pareto_2d_stacked(df_merged,
+                           fr_metric='wasserstein',
+                           average_by=None,
+                           psnr_threshold=None,
+                           save_path='pareto_2d_stacked'):
+    """
+    Pareto frontier plot: PSNR (x) vs BAR (y), stacked vertically by FR model.
+    Color encodes FR impact metric (log scale).
+    Size encodes |delta_mean| of genuine pairs.
+ 
+    Parameters
+    ----------
+    df_merged       : DataFrame with columns watermark, recognizer, psnr,
+                      accuracy, delta_mean, condition, train_dataset,
+                      test_dataset, bpp, and fr_metric column.
+    fr_metric       : FR impact column for color encoding.
+                      e.g. 'kl_divergence', 'js_divergence', 'wasserstein'.
+    average_by      : list of columns to average over, or None for no averaging.
+                      e.g. ['train_dataset', 'condition'] to average over both.
+                      e.g. ['train_dataset'] to average only over train domain.
+                      e.g. None to show all individual points.
+    psnr_threshold  : float or None. If given, shades PSNR zones.
+    save_path       : output filename (no extension).
+    """
+ 
+    metric_labels = {
+        'kl_divergence': 'log\u2081\u2080(KL Divergence)',
+        'js_divergence': 'log\u2081\u2080(JS Divergence)',
+        'wasserstein':   'log\u2081\u2080(Wasserstein)',
+    }
+    fr_label   = metric_labels.get(fr_metric, f'log\u2081\u2080({fr_metric})')
+    wm_markers = {'stegformer': 'o', 'stegaformer': '^'}
+ 
+    # Define grouping columns (always group by these)
+    base_group = ['watermark', 'recognizer', 'test_dataset', 'bpp']
+ 
+    if average_by is not None:
+        # Remove the columns we want to average over from the grouping
+        group_cols = [c for c in base_group if c not in average_by]
+        # Add any remaining categorical columns that should stay
+        agg_dict = {
+            'psnr': 'mean',
+            'accuracy': 'mean',
+            'delta_mean': 'mean',
+            fr_metric: 'mean',
+        }
+        # Also average ssim if present
+        if 'ssim' in df_merged.columns:
+            agg_dict['ssim'] = 'mean'
+ 
+        df_plot = df_merged.groupby(group_cols, as_index=False).agg(agg_dict)
+    else:
+        df_plot = df_merged.copy()
+ 
+    recognizers = sorted(df_plot['recognizer'].unique())
+    n_rows = len(recognizers)
+ 
+    fig, axes = plt.subplots(n_rows, 1,
+                              figsize=(9, 5.5 * n_rows),
+                              squeeze=False)
+ 
+    # Global size scaling
+    abs_dm      = df_plot['delta_mean'].abs()
+    size_scaled = 40 + 200 * (abs_dm - abs_dm.min()) / (abs_dm.max() - abs_dm.min() + 1e-10)
+    df_plot['size'] = size_scaled
+ 
+    # Global color scale
+    log_metric  = np.log10(df_plot[fr_metric] + 1e-6)
+    global_vmin = log_metric.min()
+    global_vmax = log_metric.max()
+ 
+    for r_i, rec in enumerate(recognizers):
+        ax = axes[r_i, 0]
+        sub = df_plot[df_plot['recognizer'] == rec].copy()
+        sub['fr_log'] = np.log10(sub[fr_metric] + 1e-6)
+ 
+        # PSNR threshold zones
+        if psnr_threshold is not None:
+            psnr_min = sub['psnr'].min() - 2
+            psnr_max = sub['psnr'].max() + 2
+            ax.axvspan(psnr_min, psnr_threshold,
+                       color='#ffcccc', alpha=0.35, zorder=0)
+            ax.axvspan(psnr_threshold, psnr_max,
+                       color='#ccffcc', alpha=0.35, zorder=0)
+            ax.axvline(psnr_threshold, color='gray',
+                       linestyle='--', linewidth=1.0, alpha=0.7)
+ 
+        # Scatter per watermark
+        sc = None
+        for wm in sorted(sub['watermark'].unique()):
+            wsub = sub[sub['watermark'] == wm]
+            sc = ax.scatter(
+                wsub['psnr'], wsub['accuracy'],
+                c=wsub['fr_log'],
+                cmap='RdYlGn_r',
+                vmin=global_vmin, vmax=global_vmax,
+                s=wsub['size'],
+                marker=wm_markers[wm],
+                alpha=0.85,
+                edgecolors='k', linewidths=0.5,
+                zorder=2
+            )
+ 
+            # Labels: bpp + dataset
+            # Track already placed labels to avoid duplicates when averaged
+            # Label offset per dataset to avoid overlapping
+            label_offsets = {
+                'facelab_london': (4, 6),    # above
+                'CFD':            (4, -10),  # below
+                'ONOT_set1':      (4, 6),    # above
+                'SCface':         (4, -10),  # below
+            }
+
+            # Short display names for labels
+            short_names = {
+                'facelab_london': 'FaceLab',
+                'CFD':            'CFD',
+                'ONOT_set1':      'ONOT',
+                'SCface':         'SCface',
+            }
+
+            placed_labels = set()
+            for _, row in wsub.iterrows():
+                display_name = short_names.get(row['test_dataset'], row['test_dataset'])
+                label_text = f"{int(row['bpp'])} {display_name}"
+                label_key = (round(row['psnr'], 1), round(row['accuracy'], 3), label_text)
+                if label_key not in placed_labels:
+                    offset = label_offsets.get(row['test_dataset'], (4, 4))
+                    ax.annotate(
+                        label_text,
+                        (row['psnr'], row['accuracy']),
+                        fontsize=5.5, alpha=0.7,
+                        xytext=offset, textcoords='offset points'
+                    )
+                    placed_labels.add(label_key)
+ 
+        ax.set_title(f'{rec.capitalize()}',
+                     fontsize=11, fontweight='bold')
+        ax.set_xlabel('PSNR — Imperceptibility (dB)', fontsize=11)
+        ax.set_ylabel('BAR — Message Recovery Rate', fontsize=11)
+        ax.grid(True, alpha=0.3, zorder=1)
+        ax.set_xlim(sub['psnr'].min() - 1, sub['psnr'].max() + 1)
+        ax.text(0.02, 0.02, 'Size = |Δmean FR (genuine)|',
+                transform=ax.transAxes, fontsize=7, alpha=0.6)
+ 
+        if sc is not None:
+            cbar = plt.colorbar(sc, ax=ax, pad=0.02)
+            cbar.set_label(fr_label, fontsize=11)
+            cbar.ax.tick_params(labelsize=9)
+ 
+    # Shared legend at bottom
+    legend_elements = [
+        Line2D([0], [0], marker=wm_markers[wm], color='k',
+               markerfacecolor='k', markersize=7,
+               linestyle='None', label=wm.capitalize())
+        for wm in sorted(df_plot['watermark'].unique())
+    ]
+    if psnr_threshold is not None:
+        legend_elements += [
+            Patch(facecolor='#ffcccc', alpha=0.6,
+                  label=f'PSNR < {psnr_threshold} dB — FR affected'),
+            Patch(facecolor='#ccffcc', alpha=0.6,
+                  label=f'PSNR ≥ {psnr_threshold} dB — FR safe'),
+        ]
+ 
+    avg_label = f"Averaged over: {', '.join(average_by)}" if average_by else "OW/WW"
+    fig.legend(
+        handles=legend_elements,
+        loc='lower center',
+        ncol=len(legend_elements),
+        fontsize=9,
+        bbox_to_anchor=(0.5, -0.07),
+        framealpha=0.9,
+        title='Watermarking Algorithm',
+        title_fontsize=9
+    )
+ 
+    fig.suptitle(
+        f'Pareto Frontier: PSNR vs Recovery | Color = {fr_label} | Size = |Δmean FR|\n'
+        f'Offline Mode — Genuine Pairs — {avg_label}',
+        fontsize=12, fontweight='bold'
+    )
+ 
+    plt.tight_layout()
+    plt.savefig(f'{save_path}.pdf', bbox_inches='tight', dpi=300)
+    plt.savefig(f'{save_path}.png', bbox_inches='tight', dpi=300)
+    plt.show()
+
+def plot_fr_dist_by_train_domain(df_merged, fr_dist_metric='kl_divergence', condition='both', save_path='kl_by_train_domain'):
+    train_colors = {'coco': '#E91E63', 'celeba_hq': '#9C27B0'}
+    mode_styles  = {'online': '', 'offline': '//'}  # hatch
+    recognizers  = df_merged['recognizer'].unique()
+
+    fig, axes = plt.subplots(len(recognizers), 2, figsize=(16, 5 * len(recognizers)),
+                              sharey=False)
+    if len(recognizers) == 1:
+        axes = axes.reshape(1, -1)
+
+    for row_i, rec in enumerate(recognizers):
+        for col_i, mode in enumerate(['online', 'offline']):
+            ax = axes[row_i, col_i]
+
+            if condition != 'both':
+                sub = df_merged[
+                    (df_merged['recognizer'] == rec) &
+                    (df_merged['mode'] == mode) &
+                    (df_merged['condition'] == condition)
+                ].groupby(['watermark', 'bpp', 'train_dataset'])[fr_dist_metric].mean().reset_index()                
+            else:
+                sub = df_merged[
+                    (df_merged['recognizer'] == rec) &
+                    (df_merged['mode'] == mode)
+                ].groupby(['watermark', 'bpp', 'train_dataset'])[fr_dist_metric].mean().reset_index()
+
+            watermarks = sorted(sub['watermark'].unique())
+            bpps       = sorted(sub['bpp'].unique())
+            trains     = sorted(sub['train_dataset'].unique())
+
+            # Posiciones: un grupo por watermark×bpp
+            group_labels = [f"{wm}\n{b}bpp" for wm in watermarks for b in bpps]
+            n_groups  = len(group_labels)
+            n_trains  = len(trains)
+            width     = 0.35
+            x         = np.arange(n_groups)
+
+            for t_i, train in enumerate(trains):
+                values = []
+                for wm in watermarks:
+                    for b in bpps:
+                        mask = (sub['watermark'] == wm) & \
+                               (sub['bpp'] == b) & \
+                               (sub['train_dataset'] == train)
+                        val = sub[mask][fr_dist_metric].values
+                        values.append(val[0] if len(val) > 0 else 0)
+
+                offset = (t_i - n_trains / 2 + 0.5) * width
+                bars = ax.bar(
+                    x + offset, values,
+                    width=width,
+                    color=train_colors[train],
+                    edgecolor='k', linewidth=0.5,
+                    alpha=0.85, label=train
+                )
+
+            ax.set_xticks(x)
+            ax.set_xticklabels(group_labels, fontsize=7, rotation=45, ha='right')
+            ax.set_ylabel(f'{fr_dist_metric} - in genuine {condition} vs OO', fontsize=9)
+            ax.set_title(f'{rec.capitalize()} — {mode}', fontsize=11, fontweight='bold')
+            ax.legend(fontsize=8, title='Train domain')
+            ax.grid(True, axis='y', alpha=0.3)
+            ax.set_yscale('log')  # log porque stegformer domina la escala
+
+    fig.suptitle('Training domain impact on FR Preservation\n'
+                 f'({fr_dist_metric} genuine {condition} vs OO — escala log)',
+                 fontsize=13, fontweight='bold')
+    plt.tight_layout()
+    plt.savefig(f'{save_path}.pdf', bbox_inches='tight', dpi=300)
+    plt.savefig(f'{save_path}.png', bbox_inches='tight', dpi=300)
+    plt.show()
+
+
+def compute_V(df_merged, w_acc=0.35, w_psnr=0.30, w_kl=0.35):
+    """Calcula V por fila y devuelve df_merged con columna V + df agregado."""
+    df = df_merged.copy()
+
+    # Normalizar globalmente
+    def norm(s):
+        return (s - s.min()) / (s.max() - s.min() + 1e-10)
+
+    df['acc_norm']  = norm(df['accuracy'])
+    df['psnr_norm'] = norm(df['psnr'])
+    df['kl_norm']   = norm(df['kl_divergence'])
+
+    df['V'] = w_acc * df['acc_norm'] + w_psnr * df['psnr_norm'] - w_kl * df['kl_norm']
+
+    # Agregar por watermark × bpp × recognizer
+    df_V = df.groupby(['watermark', 'bpp', 'recognizer', 'mode']).agg(
+        V=('V', 'mean'),
+        accuracy=('accuracy', 'mean'),
+        psnr=('psnr', 'mean'),
+        kl_divergence=('kl_divergence', 'mean'),
+        delta_mean=('delta_mean', 'mean')
+    ).reset_index()
+
+    return df, df_V
+
+
+def plot_optimal_V(df_V, save_path='optimal_V'):
+    recognizers = df_V['recognizer'].unique()
+    fig, axes = plt.subplots(1, len(recognizers), figsize=(16, 5), sharey=True)
+    if len(recognizers) == 1:
+        axes = [axes]
+
+    colors = {'online': '#2196F3', 'offline': '#FF9800'}
+
+    for ax, rec in zip(axes, recognizers):
+        sub = df_V[df_V['recognizer'] == rec].copy()
+        sub['label'] = sub['watermark'] + '\n' + sub['bpp'].astype(str) + 'bpp'
+        sub = sub.sort_values('V', ascending=False)
+
+        bars = ax.bar(
+            range(len(sub)),
+            sub['V'],
+            color=[colors[m] for m in sub['mode']],
+            edgecolor='k', linewidth=0.5, alpha=0.85
+        )
+
+        # Anotar V encima de cada barra
+        for bar, v in zip(bars, sub['V']):
+            ax.text(bar.get_x() + bar.get_width()/2,
+                    bar.get_height() + 0.005,
+                    f'{v:.3f}', ha='center', va='bottom', fontsize=7)
+
+        ax.set_xticks(range(len(sub)))
+        ax.set_xticklabels(sub['label'], fontsize=7, rotation=45, ha='right')
+        ax.set_ylabel('Índice V (mayor = mejor)', fontsize=10)
+        ax.set_title(rec.capitalize(), fontsize=12, fontweight='bold')
+        ax.axhline(sub['V'].max(), color='red', linestyle='--',
+                   linewidth=1, alpha=0.5, label='óptimo')
+        ax.grid(True, axis='y', alpha=0.3)
+
+    # Leyenda de mode
+    from matplotlib.patches import Patch
+    legend_els = [Patch(color=c, label=m) for m, c in colors.items()]
+    fig.legend(handles=legend_els, loc='lower center', ncol=2,
+               fontsize=9, bbox_to_anchor=(0.5, -0.02))
+
+    fig.suptitle('Índice de Viabilidad V = 0.35·ACC + 0.30·PSNR − 0.35·KL',
+                 fontsize=13, fontweight='bold')
+    plt.tight_layout()
+    plt.savefig(f'{save_path}.pdf', bbox_inches='tight', dpi=300)
+    plt.savefig(f'{save_path}.png', bbox_inches='tight', dpi=300)
+    plt.show()

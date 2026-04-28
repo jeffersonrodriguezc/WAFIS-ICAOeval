@@ -151,7 +151,74 @@ def show_input_vs_mtcnn_output_old(original: Union[Image.Image, np.ndarray, torc
     #print(f"[viz] saved -> {out_path}")
     return out_path
 
-def _extract_face_float_old(img, box, image_size=160, margin=0, save_path=None):
+def crop_resize(img, box, image_size):
+    """
+    box: (x1, y1, x2, y2) in pixel coords, x2/y2 exclusive-style is fine too (we resize anyway).
+    img: numpy HWC, torch HWC or CHW, or PIL Image
+    """
+
+    x1, y1, x2, y2 = map(int, box)
+    w = max(1, x2 - x1)
+    h = max(1, y2 - y1)
+
+    s = max(w, h)
+    cx = x1 + w / 2.0
+    cy = y1 + h / 2.0
+
+    # square window [x0, x0+s), [y0, y0+s)
+    x0 = int(round(cx - s / 2.0))
+    y0 = int(round(cy - s / 2.0))
+
+    if isinstance(img, np.ndarray):
+        H, W = img.shape[:2]
+    elif isinstance(img, torch.Tensor):
+        # accept HWC or CHW
+        if img.ndim != 3:
+            raise ValueError("torch img must be 3D (HWC or CHW)")
+        if img.shape[0] in (1, 3, 4) and img.shape[2] not in (1, 3, 4):
+            # CHW
+            C, H, W = img.shape
+            chw = True
+        else:
+            # HWC
+            H, W, C = img.shape
+            chw = False
+    else:
+        # PIL
+        W, H = img.size
+
+    # shift window to stay inside image (keeps square)
+    x0 = min(max(0, x0), max(0, W - s))
+    y0 = min(max(0, y0), max(0, H - s))
+    x1n, y1n = x0 + s, y0 + s
+
+    if isinstance(img, np.ndarray):
+        crop = img[y0:y1n, x0:x1n]
+        return cv2.resize(crop, (image_size, image_size), interpolation=cv2.INTER_AREA).copy()
+
+    if isinstance(img, torch.Tensor):
+        if chw:
+            crop = img[:, y0:y1n, x0:x1n]
+        else:
+            crop = img[y0:y1n, x0:x1n, :]
+
+        # simplest: use torch.nn.functional.interpolate on float
+        if chw:
+            crop_f = crop.unsqueeze(0).float()
+        else:
+            crop_f = crop.permute(2, 0, 1).unsqueeze(0).float()
+
+        out = F.interpolate(crop_f, size=(image_size, image_size), mode="area")
+        out = out.squeeze(0)
+        if not chw:
+            out = out.permute(1, 2, 0)
+        return out.byte()
+
+    # PIL
+    crop = img.crop((x0, y0, x1n, y1n))
+    return crop.resize((image_size, image_size), Image.BILINEAR)
+
+def _extract_face_float(img, box, image_size=160, margin=0, save_path=None):
     """
     Float-safe replacement for extract_face.
     Matches original crop logic + uses INTER_AREA resize for consistency.
@@ -182,24 +249,18 @@ def _extract_face_float_old(img, box, image_size=160, margin=0, save_path=None):
     x2 = int(min(box[2] + margin_adj[0] / 2, w))
     y2 = int(min(box[3] + margin_adj[1] / 2, h))
 
-    face_np = img[y1:y2, x1:x2, :]
+    box_margin = [x1, y1, x2, y2]
+    #face_np = img[y1:y2, x1:x2, :]
+    face_np = crop_resize(img, box_margin, image_size)
 
     if face_np.size == 0:
-        face_np = np.zeros((image_size, image_size, 3), dtype=np.float32)
-        face_t = torch.from_numpy(face_np).permute(2, 0, 1)
         raise ValueError(f"Empty face crop with box {box} and margin {margin}. Check the box coordinates and margin size.")
-    else:
-        # INTER_AREA to match original cv2.resize behavior
-        face_np = cv2.resize(
-            face_np,
-            (image_size, image_size),
-            interpolation=cv2.INTER_AREA
-        )
-        face_t = torch.from_numpy(face_np.copy()).permute(2, 0, 1).float()
+    
+    face_t = torch.from_numpy(face_np.copy()).permute(2, 0, 1).float()
 
     return face_t
 
-def _extract_face_float(img, box, image_size=160, margin=0, save_path=None):
+def _extract_face_float_v2(img, box, image_size=160, margin=0, save_path=None):
     """
     Float-safe replacement for extract_face.
     Matches original crop logic + uses symmetric pad/crop to reach image_size
@@ -231,70 +292,49 @@ def _extract_face_float(img, box, image_size=160, margin=0, save_path=None):
     x2 = int(min(box[2] + margin_adj[0] / 2, w))
     y2 = int(min(box[3] + margin_adj[1] / 2, h))
 
-    face_np = img[y1:y2, x1:x2, :]
+    face_np_old = img[y1:y2, x1:x2, :]
 
-    if face_np.size == 0:
+    if face_np_old.size == 0:
         raise ValueError(
             f"Empty face crop with box {box} and margin {margin}. "
             "Check the box coordinates and margin size."
         )
 
     # --- Symmetric pad or crop to reach image_size x image_size ---
-    fh, fw = face_np.shape[:2]
+    
+    fh, fw = face_np_old.shape[:2]
 
-    def _pad_or_crop_axis(arr, current, target, axis, img_full, offset):
-        """
-        Expand (using original image pixels) or crop symmetrically along one axis.
-        axis: 0 = height (y), 1 = width (x)
-        offset: y1 or x1 (position of the crop in the full image)
-        """
-        diff = target - current
-        if diff == 0:
-            return arr
+    # Compute new crop window in the original image
+    diff_h = image_size - fh
+    diff_w = image_size - fw
 
-        if diff > 0:
-            # Need to expand: pull pixels from the original image
-            before = diff // 2
-            after  = diff - before
-            if axis == 0:
-                new_start = offset - before
-                new_end   = offset + current + after
-                if new_start < 0 or new_end > img_full.shape[0]:
-                    raise ValueError(
-                        f"Cannot expand face crop along axis {axis}: "
-                        f"requested [{new_start}:{new_end}] exceeds image bounds [0:{img_full.shape[0]}]."
-                    )
-                return img_full[new_start:new_end, :, :]
-            else:
-                new_start = offset - before
-                new_end   = offset + current + after
-                if new_start < 0 or new_end > img_full.shape[1]:
-                    raise ValueError(
-                        f"Cannot expand face crop along axis {axis}: "
-                        f"requested [{new_start}:{new_end}] exceeds image bounds [0:{img_full.shape[1]}]."
-                    )
-                return img_full[:, new_start:new_end, :]
-        else:
-            # Need to crop: remove symmetrically from both sides
-            remove = -diff
-            before = remove // 2
-            after  = remove - before
-            if axis == 0:
-                return arr[before:current - after, :, :]
-            else:
-                return arr[:, before:current - after, :]
+    before_h = diff_h // 2
+    after_h  = diff_h - before_h
+    before_w = diff_w // 2
+    after_w  = diff_w - before_w
 
-    # Apply along height, then width
-    face_np = _pad_or_crop_axis(face_np, fh, image_size, axis=0, img_full=img, offset=y1)
-    face_np = _pad_or_crop_axis(face_np, fw, image_size, axis=1, img_full=img, offset=x1)
+    new_y1 = y1 - before_h
+    new_y2 = y2 + after_h
+    new_x1 = x1 - before_w
+    new_x2 = x2 + after_w
+
+    # Validate bounds before touching anything
+    if new_y1 < 0 or new_y2 > h or new_x1 < 0 or new_x2 > w:
+        raise ValueError(
+            f"Cannot expand face crop to {image_size}x{image_size}: "
+            f"requested y=[{new_y1}:{new_y2}] x=[{new_x1}:{new_x2}] "
+            f"exceeds image bounds [0:{h}] x [0:{w}]."
+        )
+
+    face_np = img[new_y1:new_y2, new_x1:new_x2, :]
 
     assert face_np.shape[:2] == (image_size, image_size), (
-        f"Shape mismatch after pad/crop: got {face_np.shape[:2]}, expected ({image_size}, {image_size})"
+        f"Shape mismatch after pad/crop: got {face_np.shape[:2]}, "
+        f"expected ({image_size}, {image_size})"
     )
 
     face_t = torch.from_numpy(face_np.copy()).permute(2, 0, 1).float()
     return face_t
-
 
 def _PIL_numpy_to_tensor(img_any, to_CHW: bool = False) -> torch.Tensor:
     """

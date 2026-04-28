@@ -186,7 +186,7 @@ def main() -> None:
                         help='Size of the image before processing, used for cropping or fitting')
     parser.add_argument('--metric', type=str, default='cosine',
                         choices=['cosine', 'euclidean'])
-    parser.add_argument('--thresholds', type=int, default=20000,
+    parser.add_argument('--thresholds', type=int, default=None,
                         help='Number of thresholds to evaluate for metrics calculation. If not set, all unique distances are used.')
     parser.add_argument('--format_evaluation', type=str, default='offline', 
                         choices=['offline', 'online'],
@@ -196,6 +196,10 @@ def main() -> None:
     parser.add_argument('--debug_img', action='store_true', default=False)
     parser.add_argument('--device', type=str, default='cpu')
     args = parser.parse_args()
+
+    if args.thresholds is None and args.dataset == 'LFW':
+        print("LFW dataset detected with no specified number of thresholds. Setting thresholds to 20000")
+        args.thresholds = 20000
 
     if args.format_evaluation == 'offline':
         image_format = 'png'    
