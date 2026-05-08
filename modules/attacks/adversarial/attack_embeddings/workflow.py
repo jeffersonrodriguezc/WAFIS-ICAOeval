@@ -533,6 +533,7 @@ class AttackEmbeddings:
             x_adv = torch.clamp(img_wm + delta_masked, 0, 1)
 
             # 3. Extract embedding of the perturbed image to compute loss
+            # Do the aligenment and normalization for ARCface (the attacked FR)
             x_adv_aligned = alignment(x_adv) # resize to 112x112 for ARCface
             x_adv_for_net = (x_adv_aligned - 0.5) / 0.5 # ARCFace normalization
             zadv = l2_norm(self.facenet(x_adv_for_net)) # Normakization to facilitate the project step of the PGD

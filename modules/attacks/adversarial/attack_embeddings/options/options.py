@@ -55,7 +55,7 @@ class InjectionOptions:
 
         # Modelos Pre-entrenados (Rutas)
         self.parser.add_argument('--facenet_mode', default='arcface', type=str)
-        self.parser.add_argument('--facenet_dir', default='./weights/model_ir_se50.pth', type=str)
+        self.parser.add_argument('--facenet_dir', default='./weights/arcface/ms1mv3_arcface_r50_fp16_backbone.pth', type=str)
         self.parser.add_argument('--facenet_mode_test', default='facenet', type=str)
         self.parser.add_argument('--only_face_recognition_evaluation', default=True, 
                                  type=bool, help="Whether to only run the face recognition evaluation without training the attack" )

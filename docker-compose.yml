@@ -125,6 +125,8 @@ services:
       - ./experiments/output:/app/output:rw
       - ./modules/attacks/adversarial/attack_embeddings:/app:rw
       - ./modules/watermarking:/app/watermarking:ro
+      - ./models:/app/weights:ro
+      - ./modules/recognition:/app/recognition:ro
     deploy:
       resources:
         reservations:
