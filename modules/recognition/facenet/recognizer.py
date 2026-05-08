@@ -1,6 +1,6 @@
 # modules/recognition/FaceNet/facenet_recognizer.py
 import torch
-from typing import Union
+from typing import Optional, Tuple, Union
 from facenet_pytorch import InceptionResnetV1, MTCNN, fixed_image_standardization
  # InceptionResnetV1 as a facenet backbone
 from PIL import Image
@@ -9,6 +9,7 @@ from facenet_pytorch.models import mtcnn as mtcnn_mod
 import numpy as np
 import os 
 import torch.nn.functional as F
+from torchvision.transforms.functional import to_tensor as tv_to_tensor
 
 # utils_viz_mtcnn.py
 from pathlib import Path
@@ -16,6 +17,7 @@ from typing import Union
 import numpy as np
 import torch
 from PIL import Image
+import cv2
 
 def _to_hwc_uint8_for_viz(x: Union[Image.Image, np.ndarray, torch.Tensor]) -> Image.Image:
     """Convierte PIL/np/tensor a PIL RGB para visualizar (uint8), exprimiendo dims=1 si existen."""
@@ -69,7 +71,7 @@ def show_input_vs_mtcnn_output(original: Union[Image.Image, np.ndarray, torch.Te
     if face.dim() == 3 and face.shape[0] in (1, 3):
         face_np = face.permute(1, 2, 0).numpy()  # HWC
     else:
-        raise ValueError(f"Unexpected face shape: {tuple(face.shape)}")
+        raise ValueError(f"Unexpected face tensor shape: {tuple(face.shape)}")
 
     face_np = np.clip(face_np, 0, 255).astype(np.float32)
     if face_np.max() <= 1.0 + 1e-6:
@@ -149,54 +151,189 @@ def show_input_vs_mtcnn_output_old(original: Union[Image.Image, np.ndarray, torc
     #print(f"[viz] saved -> {out_path}")
     return out_path
 
+def crop_resize(img, box, image_size):
+    """
+    box: (x1, y1, x2, y2) in pixel coords, x2/y2 exclusive-style is fine too (we resize anyway).
+    img: numpy HWC, torch HWC or CHW, or PIL Image
+    """
+
+    x1, y1, x2, y2 = map(int, box)
+    w = max(1, x2 - x1)
+    h = max(1, y2 - y1)
+
+    s = max(w, h)
+    cx = x1 + w / 2.0
+    cy = y1 + h / 2.0
+
+    # square window [x0, x0+s), [y0, y0+s)
+    x0 = int(round(cx - s / 2.0))
+    y0 = int(round(cy - s / 2.0))
+
+    if isinstance(img, np.ndarray):
+        H, W = img.shape[:2]
+    elif isinstance(img, torch.Tensor):
+        # accept HWC or CHW
+        if img.ndim != 3:
+            raise ValueError("torch img must be 3D (HWC or CHW)")
+        if img.shape[0] in (1, 3, 4) and img.shape[2] not in (1, 3, 4):
+            # CHW
+            C, H, W = img.shape
+            chw = True
+        else:
+            # HWC
+            H, W, C = img.shape
+            chw = False
+    else:
+        # PIL
+        W, H = img.size
+
+    # shift window to stay inside image (keeps square)
+    x0 = min(max(0, x0), max(0, W - s))
+    y0 = min(max(0, y0), max(0, H - s))
+    x1n, y1n = x0 + s, y0 + s
+
+    if isinstance(img, np.ndarray):
+        crop = img[y0:y1n, x0:x1n]
+        return cv2.resize(crop, (image_size, image_size), interpolation=cv2.INTER_AREA).copy()
+
+    if isinstance(img, torch.Tensor):
+        if chw:
+            crop = img[:, y0:y1n, x0:x1n]
+        else:
+            crop = img[y0:y1n, x0:x1n, :]
+
+        # simplest: use torch.nn.functional.interpolate on float
+        if chw:
+            crop_f = crop.unsqueeze(0).float()
+        else:
+            crop_f = crop.permute(2, 0, 1).unsqueeze(0).float()
+
+        out = F.interpolate(crop_f, size=(image_size, image_size), mode="area")
+        out = out.squeeze(0)
+        if not chw:
+            out = out.permute(1, 2, 0)
+        return out.byte()
+
+    # PIL
+    crop = img.crop((x0, y0, x1n, y1n))
+    return crop.resize((image_size, image_size), Image.BILINEAR)
+
 def _extract_face_float(img, box, image_size=160, margin=0, save_path=None):
     """
-    Replacement for facenet_pytorch.models.utils.detect_face.extract_face
-    Accepts float32 arrays/tensors without quantizing to uint8.
-    - img: np.ndarray HWC float32 in [0,255], or torch.Tensor CHW/HWC float32 in [0,255]
-    - box: [x1, y1, x2, y2]
-    Returns: torch.Tensor [3, image_size, image_size] float32 in [0,255]
+    Float-safe replacement for extract_face.
+    Matches original crop logic + uses INTER_AREA resize for consistency.
     """
-    # to numpy HWC float32
+    # --- Convert to numpy HWC float32 ---
     if isinstance(img, torch.Tensor):
-        if img.dim() == 3 and img.shape[0] in (1, 3):      # CHW
+        if img.dim() == 3 and img.shape[0] in (1, 3):
             img = img.permute(1, 2, 0).cpu().numpy()
-        elif img.dim() == 3 and img.shape[2] in (1, 3):    # HWC
+        elif img.dim() == 3 and img.shape[2] in (1, 3):
             img = img.cpu().numpy()
         else:
             raise ValueError(f"Unsupported tensor shape: {tuple(img.shape)}")
     elif isinstance(img, np.ndarray):
-        pass  # already fine
+        pass
     else:
-        # likely PIL.Image – fallback (esto cuantiza, evítalo en la ruta npy)
         img = np.asarray(img, dtype=np.float32)
 
     img = img.astype(np.float32)
     h, w = img.shape[:2]
 
-    x1, y1, x2, y2 = [float(b) for b in box]
-    if isinstance(margin, int):
-        mx = my = margin
-    else:
-        mx, my = margin
+    # --- Margin: replicate EXACT original logic ---
+    margin_adj = [
+        margin * (box[2] - box[0]) / (image_size - margin),
+        margin * (box[3] - box[1]) / (image_size - margin),
+    ]
+    x1 = int(max(box[0] - margin_adj[0] / 2, 0))
+    y1 = int(max(box[1] - margin_adj[1] / 2, 0))
+    x2 = int(min(box[2] + margin_adj[0] / 2, w))
+    y2 = int(min(box[3] + margin_adj[1] / 2, h))
 
-    x1 = max(0.0, x1 - mx / 2.0)
-    y1 = max(0.0, y1 - my / 2.0)
-    x2 = min(w,   x2 + mx / 2.0)
-    y2 = min(h,   y2 + my / 2.0)
-
-    x1i, y1i, x2i, y2i = int(round(x1)), int(round(y1)), int(round(x2)), int(round(y2))
-    face_np = img[y1i:y2i, x1i:x2i, :]  # H',W',C
+    box_margin = [x1, y1, x2, y2]
+    #face_np = img[y1:y2, x1:x2, :]
+    face_np = crop_resize(img, box_margin, image_size)
 
     if face_np.size == 0:
-        face_np = np.zeros((image_size, image_size, 3), dtype=np.float32)
-        face_t = torch.from_numpy(face_np).permute(2, 0, 1)  # C,H,W
-    else:
-        face_t = torch.from_numpy(face_np).permute(2, 0, 1).unsqueeze(0).float()  # 1,C,H,W
-        face_t = F.interpolate(face_t, size=(image_size, image_size),
-                               mode='bilinear', align_corners=False)
-        face_t = face_t.squeeze(0)  # C,H,W
+        raise ValueError(f"Empty face crop with box {box} and margin {margin}. Check the box coordinates and margin size.")
+    
+    face_t = torch.from_numpy(face_np.copy()).permute(2, 0, 1).float()
 
+    return face_t
+
+def _extract_face_float_v2(img, box, image_size=160, margin=0, save_path=None):
+    """
+    Float-safe replacement for extract_face.
+    Matches original crop logic + uses symmetric pad/crop to reach image_size
+    WITHOUT rescaling pixels (preserves original pixel values).
+    """
+    # --- Convert to numpy HWC float32 ---
+    if isinstance(img, torch.Tensor):
+        if img.dim() == 3 and img.shape[0] in (1, 3):
+            img = img.permute(1, 2, 0).cpu().numpy()
+        elif img.dim() == 3 and img.shape[2] in (1, 3):
+            img = img.cpu().numpy()
+        else:
+            raise ValueError(f"Unsupported tensor shape: {tuple(img.shape)}")
+    elif isinstance(img, np.ndarray):
+        pass
+    else:
+        img = np.asarray(img, dtype=np.float32)
+
+    img = img.astype(np.float32)
+    h, w = img.shape[:2]
+
+    # --- Margin: replicate EXACT original logic ---
+    margin_adj = [
+        margin * (box[2] - box[0]) / (image_size - margin),
+        margin * (box[3] - box[1]) / (image_size - margin),
+    ]
+    x1 = int(max(box[0] - margin_adj[0] / 2, 0))
+    y1 = int(max(box[1] - margin_adj[1] / 2, 0))
+    x2 = int(min(box[2] + margin_adj[0] / 2, w))
+    y2 = int(min(box[3] + margin_adj[1] / 2, h))
+
+    face_np_old = img[y1:y2, x1:x2, :]
+
+    if face_np_old.size == 0:
+        raise ValueError(
+            f"Empty face crop with box {box} and margin {margin}. "
+            "Check the box coordinates and margin size."
+        )
+
+    # --- Symmetric pad or crop to reach image_size x image_size ---
+    
+    fh, fw = face_np_old.shape[:2]
+
+    # Compute new crop window in the original image
+    diff_h = image_size - fh
+    diff_w = image_size - fw
+
+    before_h = diff_h // 2
+    after_h  = diff_h - before_h
+    before_w = diff_w // 2
+    after_w  = diff_w - before_w
+
+    new_y1 = y1 - before_h
+    new_y2 = y2 + after_h
+    new_x1 = x1 - before_w
+    new_x2 = x2 + after_w
+
+    # Validate bounds before touching anything
+    if new_y1 < 0 or new_y2 > h or new_x1 < 0 or new_x2 > w:
+        raise ValueError(
+            f"Cannot expand face crop to {image_size}x{image_size}: "
+            f"requested y=[{new_y1}:{new_y2}] x=[{new_x1}:{new_x2}] "
+            f"exceeds image bounds [0:{h}] x [0:{w}]."
+        )
+
+    face_np = img[new_y1:new_y2, new_x1:new_x2, :]
+
+    assert face_np.shape[:2] == (image_size, image_size), (
+        f"Shape mismatch after pad/crop: got {face_np.shape[:2]}, "
+        f"expected ({image_size}, {image_size})"
+    )
+
+    face_t = torch.from_numpy(face_np.copy()).permute(2, 0, 1).float()
     return face_t
 
 def _PIL_numpy_to_tensor(img_any, to_CHW: bool = False) -> torch.Tensor:
@@ -209,102 +346,179 @@ def _PIL_numpy_to_tensor(img_any, to_CHW: bool = False) -> torch.Tensor:
         # PNG path: source is 8-bit, but we keep it float afterwards
         arr = np.array(img_any.convert('RGB'), dtype=np.float32)  # H,W,3 in [0,255]
         if to_CHW:
-            arr = np.transpose(arr, (2, 0, 1))  # C,H,W
-        ten = torch.from_numpy(arr).float()      # H,W,3
+            arr = np.transpose(arr, (2, 0, 1))[np.newaxis]  # 1,C,H,W
+        ten = torch.from_numpy(arr).float()      
         return ten
 
     if isinstance(img_any, np.ndarray):
         arr = img_any
         arr = arr.astype(np.float32)   
         if to_CHW:
-            arr = np.transpose(arr, (2, 0, 1)) # keep decimals
+            arr = np.transpose(arr, (2, 0, 1))[np.newaxis]  # 1,C,H,W
         ten = torch.from_numpy(arr).float()       # H,W,3
         return ten
 
     raise TypeError(f"Unsupported type: {type(img_any)}")
 
-def preprocess_for_facenet(img_any, to_CHW: bool = False) -> torch.Tensor:
+def preprocess_for_facenet(img_any, to_CHW: bool = False, TARGET: tuple = (160, 160)) -> torch.Tensor:
     """
     Returns a tensor [1,3,S,S] ready for FaceNet:
     - Float32 in [0,1] after fixed_image_standardization
     """
-    # 1) To CHW float [0,255]
-    chw = _PIL_numpy_to_tensor(img_any, to_CHW=to_CHW)  # [1,3,H,W], float32
-    #chw = chw.unsqueeze(0)  # [1,3,H,W]
+    # check if the img_any is a Pil image or a numpy array, and convert to tensor
+    if isinstance(img_any, (Image.Image, np.ndarray)):
+        # 1) To CHW float [0,255]
+        img_any = _PIL_numpy_to_tensor(img_any, to_CHW=to_CHW)  # [1,3,H,W], float32
+        #print('preprocess_for_facenet - after to_tensor, before standardization: size:', chw.shape, 'dtype:', chw.dtype, 'min:', chw.min().item(), 'max:', chw.max().item())
+        #chw = chw.unsqueeze(0)  # [1,3,H,W]
+    
     # 2) standardize (FaceNet expects fixed_image_standardization)   
-    chw_std = fixed_image_standardization(chw)  # [3,S,S], float32
-        
+    chw_std = fixed_image_standardization(img_any)  # [3,S,S], float32
+    #print('preprocess_for_facenet - after standardization: size:', chw_std.shape, 'dtype:', chw_std.dtype, 'min:', chw_std.min().item(), 'max:', chw_std.max().item())
+    # 4) resize
+    if chw_std.shape[-2:] != torch.Size(list(TARGET)):
+        chw_std = F.interpolate(
+            chw_std,
+            size=TARGET,
+            mode='bilinear',
+            align_corners=False
+        )       
     return chw_std  # ready for FaceNet
 
 class FaceNetRecognizer:
     """
     This service extracts facial embeddings using a pre-trained FaceNet model.
     """
+    IMG_SIZE = 160  # facenet native resolution
+
     def __init__(self, device: str = 'cpu', image_format: str = 'png', use_mtcnn: bool = True,
                  save_images_path: Union[str, Path] = None):
 
         self.device = torch.device(device)
         print(f"Initializing FaceNetRecognizer on device: {self.device}")
         # model
-        self.model = InceptionResnetV1(pretrained='vggface2').eval().to(self.device)
+        self.model = InceptionResnetV1(pretrained='vggface2', classify=False).eval().to(self.device)
         # path to save visualization images
         self.save_images_path = save_images_path
         # for online and offline tests
         self.image_format = image_format
         self.use_mtcnn = use_mtcnn
-        # MTCNN for face detection and alignment in the wild
-        if use_mtcnn: 
-            if image_format == 'png':
-                self.mtcnn = MTCNN(keep_all=False, device=self.device)
-            else:
-                mtcnn_mod.extract_face = _extract_face_float
-                self.mtcnn = mtcnn_mod.MTCNN(keep_all=False, device=self.device)
+        # --- MTCNN (same config as FaceNet service, output size = 160) ---
+        self.mtcnn = None
+        if use_mtcnn:
+            self.mtcnn = MTCNN(
+                image_size=self.IMG_SIZE,  # crop directly to facenet input size
+                margin=0,
+                keep_all=False,            
+                post_process=False,         # output tensor in [0, 255]
+                device=self.device
+            )
 
-    def get_embedding(self, image, debug_img: bool = False) -> Union[torch.Tensor, None]:
+    # --------------------------------------------------------------------- #
+    # Box detection (runs MTCNN detection only, no embedding)
+    # --------------------------------------------------------------------- #
+    def detect_box(self, img) -> Optional[np.ndarray]:
         """
-        Calculate the facial embedding for a given image input.
-        Args:
-            image: PIL Image (Image.Image), or an array NumPy (np.ndarray),
+        Run MTCNN face detection and return the bounding box.
+        For npy inputs, converts to uint8 PIL for detection only
+        (the box coordinates are what we need, not the pixel values).
         
         Returns:
-            Pytorch Tensor with the facial embedding, or None if the input is invalid.
+            np.ndarray of shape (4,) with [x1, y1, x2, y2] or None.
         """
-        if self.use_mtcnn:
-            
-            # Detect and align the face using MTCNN  
-            if isinstance(image, Image.Image): # png
-                image_face = self.mtcnn(image)
-                if debug_img and self.save_images_path is not None:
-                    show_input_vs_mtcnn_output(original=image, face_tensor=image_face, tag='PIL',
-                                           out_dir=self.save_images_path)
-            
-            else: # npy
-                image = image[None, ...] # Add batch dimension
-                image_face = self.mtcnn(image)
-                # return the first face
-                image_face = image_face[0] if image_face is not None else None
-                if debug_img and self.save_images_path is not None:
-                    show_input_vs_mtcnn_output(original=image, face_tensor=image_face, tag='NPY',
-                                           out_dir=self.save_images_path)
-
-            if image_face is None:
-                print("No face detected in the image.")
-                return None
-            
-            image_face = image_face.unsqueeze(0).to(self.device)  # Add batch dimension [1,3,S,S]
-            
-        else:
-            image_face = preprocess_for_facenet(image, to_CHW=True)
-            # This no apply face detection nither alignment nither cropping
-            # Only channel permutation and standardization
-            image_face = image_face.unsqueeze(0).to(self.device)  # Add batch dimension [1,3,S,S]
-
-        # Calculate the embedding using the FaceNet model
-        with torch.no_grad():
-            embedding = self.model(image_face)
+        if self.mtcnn is None:
+            return None
         
-        # The embedding is a 512-dimensional vector
-        return embedding.squeeze(0) # Delete the batch dimension for a single image embedding
+        # Convert to PIL for detection (MTCNN.detect expects PIL or uint8)
+        if isinstance(img, Image.Image):
+            detect_img = img
+        else:
+            raise TypeError(f"Unsupported image type: {type(img)}")
+        
+        boxes, _ = self.mtcnn.detect(detect_img)
+        
+        if boxes is not None and len(boxes) > 0:
+            return boxes[0]  # first (most prominent) face
+        return None    
+    
+    # --------------------------------------------------------------------- #
+    # Embed with precomputed box (float-safe, no uint8 quantization)
+    # --------------------------------------------------------------------- #
+    def _embed_with_box(self, img, box: np.ndarray, debug_img: bool = False, origin: str = "original") -> torch.Tensor:
+        """
+        Crop the face using a precomputed bounding box via _extract_face_float
+        (preserves float32 precision), then run through the ArcFace backbone.
+        """
+        face_tensor = _extract_face_float(img, box, image_size=self.IMG_SIZE, margin=0)
+        #print(f"Box reuse path: extracted face tensor shape: {face_tensor.shape}, dtype: {face_tensor.dtype}, min: {face_tensor.min().item()}, max: {face_tensor.max().item()}")
+        
+        #print(f"debug_img: {debug_img}, save_images_path: {self.save_images_path}, origin: {origin}")
+        if debug_img and self.save_images_path is not None:
+            #print(f"[debug_img] Box reuse path: visualizing original vs MTCNN crop for {origin} image")
+            tag = f'PIL_box_reuse-{origin}' if isinstance(img, Image.Image) else f'NPY_box_reuse-{origin}'
+            show_input_vs_mtcnn_output(original=img, face_tensor=face_tensor, 
+                                       tag=tag, out_dir=self.save_images_path)
+        
+        tensor = face_tensor.unsqueeze(0).to(self.device)
+        #print(f"Box reuse path: tensor shape before preprocess_for_facenet: {tensor.shape}, dtype: {tensor.dtype}, min: {tensor.min().item()}, max: {tensor.max().item()}")
+        tensor = preprocess_for_facenet(tensor, to_CHW=False, TARGET=(self.IMG_SIZE, self.IMG_SIZE))
+        #print(f"Box reuse path: tensor shape after preprocess_for_facenet: {tensor.shape}, dtype: {tensor.dtype}, min: {tensor.min().item()}, max: {tensor.max().item()}")
+        
+        with torch.no_grad():
+            embedding = self.model(tensor)
+        
+        return embedding.squeeze(0)  
+
+    # --------------------------------------------------------------------- #
+    # get_embedding_and_box: detect + embed, return both
+    # --------------------------------------------------------------------- #
+    def get_embedding_and_box(self, img, debug_img: bool = False, origin: str = "original") -> Tuple[Optional[torch.Tensor], Optional[np.ndarray]]:
+        """
+        Detect face with MTCNN, compute embedding, and return both the
+        embedding and the bounding box for later reuse on watermarked images.
+        
+        Returns:
+            (embedding, box) — embedding is 512-d tensor, box is np.ndarray(4,)
+        """
+        if not self.use_mtcnn:
+            # No MTCNN: just embed, no box
+            emb = self.get_embedding(img)
+            return emb, None
+        
+        # Detect box
+        box = self.detect_box(img)
+        if box is None:
+            raise ValueError("MTCNN failed to detect a face in the image.")
+        
+        # Now run get embedding with the precomputed box (float-safe)
+        embedding = self.get_embedding(img, debug_img=debug_img, precomputed_box=box, origin=origin)
+        
+        return embedding.squeeze(0), box      
+    
+    # --------------------------------------------------------------------- #
+    # get_embedding: original method, now with optional precomputed_box
+    # --------------------------------------------------------------------- #
+    def get_embedding(self, img, debug_img: bool = False, 
+                      precomputed_box: Optional[np.ndarray] = None,
+                      origin: str = "original"):
+        """
+        Return a 512-d embedding.
+        
+        If precomputed_box is provided and use_mtcnn=True, the box is used
+        to crop the face directly (float-safe), bypassing MTCNN detection
+        and its internal uint8 quantization.
+        """
+        # --- Box reuse path: float-safe crop ---
+        if precomputed_box is not None and self.use_mtcnn:
+            return self._embed_with_box(img, precomputed_box, debug_img=debug_img, origin=origin)
+        
+        tensor = preprocess_for_facenet(img, to_CHW=True, 
+                                            TARGET=(self.IMG_SIZE, self.IMG_SIZE))
+                 
+        with torch.no_grad():
+            embedding = self.model(tensor)
+ 
+        return embedding.squeeze(0) 
 
     
     def get_distance(self, emb1: torch.Tensor, emb2: torch.Tensor, metric: str) -> float:
@@ -323,16 +537,16 @@ class FaceNetRecognizer:
             raise ValueError("Embeddings must have the same shape.")
         
         # Calculate the distance
+        emb1_norm = emb1 / emb1.norm(p=2, dim=0, keepdim=True)
+        emb2_norm = emb2 / emb2.norm(p=2, dim=0, keepdim=True)
         if metric == 'cosine':
             # Cosine distance
-            emb1_norm = emb1 / emb1.norm(p=2, dim=0, keepdim=True)
-            emb2_norm = emb2 / emb2.norm(p=2, dim=0, keepdim=True)
             #cosine_similarity = F.cosine_similarity(emb1.unsqueeze(0), emb2.unsqueeze(0), dim=0)
             cosine_similarity = torch.dot(emb1_norm, emb2_norm).item()
             distance = 1 - cosine_similarity
         elif metric == 'euclidean':
             # Euclidean distance
-            distance = torch.norm(emb1 - emb2).item()
+            distance = torch.norm(emb1_norm - emb2_norm).item()
         else:
             raise ValueError("Unsupported metric. Use 'euclidean' or 'cosine'.")
         

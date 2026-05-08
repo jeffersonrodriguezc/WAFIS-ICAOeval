@@ -9,7 +9,6 @@ from tqdm import tqdm  # For progress bar
 from PIL import Image, ImageOps
 import numpy as np
 import torch
-from tqdm import tqdm
 
 def load_and_preprocess_image(image_path, img_size, img_norm=False, image_format='png'):
     # Apply some operations before getting the embedding if needed, depend on the watermarking model
@@ -19,13 +18,16 @@ def load_and_preprocess_image(image_path, img_size, img_norm=False, image_format
 
     elif image_format == 'npy':
         img_cover = np.load(image_path).astype(np.float32)
+        # if the image is in the range [0,1], convert to [0,255] float
+        if img_cover.max() <= 1.0:
+            img_cover = img_cover * 255
 
     return img_cover
 
 def get_identity_from_filename(filename):
     return os.path.splitext(filename.split('_')[0])[0]
 
-def get_embeddings(folder_path, image_files, img_size, face_recognizer_service, image_format='png',
+def get_embeddings_old(folder_path, image_files, img_size, face_recognizer_service, image_format='png',
                    debug_img=False):
     """Generate embeddings for all images in the folder."""
     embeddings_by_identity = defaultdict(list)
@@ -37,7 +39,64 @@ def get_embeddings(folder_path, image_files, img_size, face_recognizer_service, 
             embeddings_by_identity[identity].append(embedding)
     return embeddings_by_identity
 
-def calculate_tar_at_far(far_list, frr_list, target_far=0.0001): # Note: 0.01% = 0.0001
+def get_embeddings(folder_path, image_files, img_size, face_recognizer_service,
+                   image_format='png', debug_img=False, precomputed_boxes=None):
+    """
+    Generate embeddings for all images in the folder.
+    
+    Args:
+        precomputed_boxes: dict mapping identity -> bounding box (np.ndarray).
+                           When provided, this box is reused instead of running
+                           MTCNN detection, avoiding uint8 quantization on
+                           watermarked images.
+    """
+    embeddings_by_identity = defaultdict(list)
+    for img_path in tqdm(image_files, desc=f"Generating embeddings for {folder_path.name}"):
+        identity = get_identity_from_filename(img_path.name)
+        img = load_and_preprocess_image(img_path, img_size, image_format=image_format)
+        #print(f"min and max pixel values for image {img_path.name}: {img.min()} - {img.max()}")
+        
+        box = precomputed_boxes.get(identity) if precomputed_boxes else None
+        embedding = face_recognizer_service.get_embedding(img, debug_img=debug_img,
+                                                          precomputed_box=box, origin='watermarked' if box is not None else 'original')
+        
+        if embedding is not None:
+            embeddings_by_identity[identity].append(embedding)
+        else:
+            raise ValueError(f"Failed to get embedding for image: {img_path} with identity: {identity}")
+        
+    return embeddings_by_identity
+
+def get_embeddings_and_boxes(folder_path, image_files, img_size, face_recognizer_service,
+                              image_format='png', debug_img=False):
+    """
+    Generate embeddings AND store the detected bounding boxes for later reuse.
+    Only meaningful when use_mtcnn=True.
+    
+    Returns:
+        embeddings_by_identity: dict  identity -> [embedding, ...]
+        boxes_by_identity:      dict  identity -> np.ndarray (bounding box)
+    """
+    embeddings_by_identity = defaultdict(list)
+    boxes_by_identity = {}
+    for img_path in tqdm(image_files, desc=f"Generating embeddings+boxes for {folder_path.name}"):
+        identity = get_identity_from_filename(img_path.name)
+        img = load_and_preprocess_image(img_path, img_size, image_format=image_format)
+        
+        embedding, box = face_recognizer_service.get_embedding_and_box(img, debug_img=debug_img, origin='original')
+        
+        if embedding is not None:
+            embeddings_by_identity[identity].append(embedding)
+            if box is not None:
+                boxes_by_identity[identity] = box
+            else:
+                raise ValueError(f"Failed to get bounding box for image: {img_path} with identity: {identity}")
+        else:
+            raise ValueError(f"Failed to get embedding for image: {img_path} with identity: {identity}")
+        
+    return embeddings_by_identity, boxes_by_identity
+
+def calculate_tar_at_far(far_list, frr_list, target_far=0.001): # Note: 0.01% = 0.0001, 0.1% = 0.001, 1% = 0.01
     """
     Calculates the TAR (1 - FRR) at a specific FAR threshold.
     """
@@ -62,7 +121,7 @@ def calculate_tar_at_far(far_list, frr_list, target_far=0.0001): # Note: 0.01% =
     return {'TAR_at_FAR': round(tar * 100, 3),
             'Actual_FAR': round(far_array[best_index] * 100, 5)}
 
-def calculate_metrics(genuine_distances, impostor_distances, num_thresholds=None):
+def calculate_metrics(genuine_distances, impostor_distances, num_thresholds=None, target_far=0.001):
     """Compute EER, FAR, and FRR based on genuine and impostor distances."""
     distances = np.concatenate([genuine_distances, impostor_distances])
     labels = np.concatenate([np.ones_like(genuine_distances), np.zeros_like(impostor_distances)])
@@ -106,7 +165,7 @@ def calculate_metrics(genuine_distances, impostor_distances, num_thresholds=None
     
     auc = np.trapz(tpr_sorted, fpr_sorted)
 
-    TAR_metric = calculate_tar_at_far(far_list, frr_list, target_far=0.0001)
+    TAR_metric = calculate_tar_at_far(far_list, frr_list, target_far=target_far)
 
     return {'EER': round(eer*100,3), 
             'FAR_at_EER': round(far_list[eer_index]*100,3), 
@@ -133,9 +192,14 @@ def main() -> None:
                         choices=['offline', 'online'],
                         help='Format of the evaluation, offline (all images in png format) or online (npy arrays stored during watermarking)')
     parser.add_argument('--use_mtcnn', action='store_true', default=False)
+    parser.add_argument('--target_far', type=float, default=0.001)
     parser.add_argument('--debug_img', action='store_true', default=False)
     parser.add_argument('--device', type=str, default='cpu')
     args = parser.parse_args()
+
+    if args.thresholds is None and args.dataset == 'LFW':
+        print("LFW dataset detected with no specified number of thresholds. Setting thresholds to 20000")
+        args.thresholds = 20000
 
     if args.format_evaluation == 'offline':
         image_format = 'png'    
@@ -149,7 +213,8 @@ def main() -> None:
     watermarked_templates = Path(f'output/watermarking/{args.watermarking_model}/{args.experiment_name}/inference/{args.train_dataset}/{args.dataset}/watermarked_templates')
     # path for output images
     output_images_path = Path(f'output/recognition/{args.watermarking_model}/{args.experiment_name}/{args.train_dataset}/{args.dataset}/facenet/images')
-
+    # target far for reporting TAR, can be set to 0.0001 for 0.01% FAR, 0.001 for 0.1% FAR, or 0.01 for 1% FAR
+    target_far = args.target_far
     # Initialize the FaceNet recognizer
     face_recognizer_service = FaceNetRecognizer(device=args.device, image_format=image_format, use_mtcnn=args.use_mtcnn, 
                                                 save_images_path = output_images_path)
@@ -204,18 +269,57 @@ def main() -> None:
     else:
         raise ValueError(f"Unsupported evaluation format: {args.format_evaluation}")
     
-    # get the embeddings
-    watermarked_templates_embs = get_embeddings(watermarked_templates, watermarked_templates_paths, args.img_size, face_recognizer_service, image_format=image_format)
-    templates_embs = get_embeddings(templates_path, template_paths, args.img_size, face_recognizer_service)
-    template_identities = set(templates_embs.keys())
+    # -----------------------------------------------------------------------
+    # Generate embeddings
+    # When use_mtcnn=True, we detect bounding boxes on the ORIGINAL images
+    # and reuse them for the watermarked counterparts. This prevents MTCNN's
+    # internal uint8 quantization from destroying subtle watermark differences 
+    # and ensures a fair comparison between original and watermarked images.
+    # -----------------------------------------------------------------------
+    if args.use_mtcnn:
+        # Original templates: detect + embed, save boxes
+        templates_embs, template_boxes = get_embeddings_and_boxes(
+            templates_path, template_paths, args.img_size, face_recognizer_service, debug_img=args.debug_img)
+        
+        template_identities = set(templates_embs.keys())
+ 
+        # Filter paths to only include identities present in templates
+        filtered_image_paths = [p for p in image_paths if get_identity_from_filename(p.name) in template_identities]
+        filtered_watermarked_paths = [p for p in watermarked_paths if get_identity_from_filename(p.name) in template_identities]
+ 
+        # Original probes: detect + embed, save boxes
+        tests_embs, probe_boxes = get_embeddings_and_boxes(
+            test_path, filtered_image_paths, args.img_size, face_recognizer_service, debug_img=args.debug_img)
+ 
+        # Watermarked templates: reuse template_boxes
+        watermarked_templates_embs = get_embeddings(
+            watermarked_templates, watermarked_templates_paths, args.img_size, 
+            face_recognizer_service, image_format=image_format,
+            precomputed_boxes=template_boxes, debug_img=args.debug_img)
+        
+        # Watermarked probes: reuse probe_boxes
+        watermarked_embs = get_embeddings(
+            watermarked_path, filtered_watermarked_paths, args.img_size, 
+            face_recognizer_service, image_format=image_format,
+            debug_img=args.debug_img, precomputed_boxes=probe_boxes)    
 
-    # Filter image_paths and watermarked_paths to only include identities present in templates
-    filtered_image_paths = [p for p in image_paths if get_identity_from_filename(p.name) in template_identities]
-    filtered_watermarked_paths = [p for p in watermarked_paths if get_identity_from_filename(p.name) in template_identities]
-
-    tests_embs = get_embeddings(test_path, filtered_image_paths, args.img_size, face_recognizer_service)
-    watermarked_embs = get_embeddings(watermarked_path, filtered_watermarked_paths, args.img_size, face_recognizer_service, image_format=image_format, 
-                                      debug_img=args.debug_img)
+    else:
+        # No MTCNN: process everything independently (no box reuse needed)
+        watermarked_templates_embs = get_embeddings(
+            watermarked_templates, watermarked_templates_paths, args.img_size, 
+            face_recognizer_service, image_format=image_format)
+        
+        templates_embs = get_embeddings(templates_path, template_paths, args.img_size, face_recognizer_service)
+        template_identities = set(templates_embs.keys())
+ 
+        filtered_image_paths = [p for p in image_paths if get_identity_from_filename(p.name) in template_identities]
+        filtered_watermarked_paths = [p for p in watermarked_paths if get_identity_from_filename(p.name) in template_identities]
+ 
+        tests_embs = get_embeddings(test_path, filtered_image_paths, args.img_size, face_recognizer_service)
+        
+        watermarked_embs = get_embeddings(
+            watermarked_path, filtered_watermarked_paths, args.img_size, 
+            face_recognizer_service, image_format=image_format, debug_img=args.debug_img)
     
     print(f"Number of identities in templates: {len(templates_embs)}")
     print(f"Example identities in templates: {list(templates_embs.keys())[:5]}")
@@ -257,10 +361,12 @@ def main() -> None:
                 dist_wm_template = face_recognizer_service.get_distance(watermarked_templates_embs[identity_a][0], watermarked_embs[identity_b][0], metric=args.metric)
                 # raw distance between original probe and watermarked probe
                 raw_dist = face_recognizer_service.get_distance(tests_embs[identity_b][0], watermarked_embs[identity_b][0], metric=args.metric)
-                variation_dist = abs(dist - dist_wm)
+                variation_dist = (dist_wm - dist) # OO - OW
+
                 # raw distance between original template and watermarked template
                 raw_dist_template = face_recognizer_service.get_distance(templates_embs[identity_a][0], watermarked_templates_embs[identity_a][0], metric=args.metric)
-                variation_dist_template = abs(dist - dist_wm_template)
+                variation_dist_template = (dist_wm_template - dist) # OO - WW
+
                 
                 #print(f"Distance: {dist}")
                 #print(f"Distance WM: {dist_wm}")
@@ -288,10 +394,10 @@ def main() -> None:
                     # watermarked template - watermarked probe
                     dist_wm_template = face_recognizer_service.get_distance(watermarked_templates_embs[identity_a][0], watermarked_embs[identity_b][0], metric=args.metric)
                     raw_dist = face_recognizer_service.get_distance(tests_embs[identity_a][0], watermarked_embs[identity_b][0], metric=args.metric)
-                    variation_dist = abs(dist - dist_wm)
+                    variation_dist = (dist_wm - dist) 
                     # raw distance between original template and watermarked template
                     raw_dist_template = face_recognizer_service.get_distance(templates_embs[identity_a][0], watermarked_templates_embs[identity_b][0], metric=args.metric)
-                    variation_dist_template = abs(dist - dist_wm_template)
+                    variation_dist_template = (dist_wm_template - dist)
 
                     #print(f"Distance: {dist}")
                     #print(f"Distance WM: {dist_wm}")
@@ -307,16 +413,18 @@ def main() -> None:
                     impostor_variation_distances_template.append(variation_dist_template)
     
     # Compute metrics
-    metrics_baseline = calculate_metrics(genuine_distances_baseline, impostor_distances_baseline, num_thresholds=args.thresholds)
+    metrics_baseline = calculate_metrics(genuine_distances_baseline, impostor_distances_baseline, 
+                                         num_thresholds=args.thresholds, target_far=target_far)
     print("Metrics before watermarking:")
     print(metrics_baseline)
 
-    metrics_baseline_wm = calculate_metrics(genuine_distances_wm, impostor_distances_wm, num_thresholds=args.thresholds)
+    metrics_baseline_wm = calculate_metrics(genuine_distances_wm, impostor_distances_wm, num_thresholds=args.thresholds, target_far=target_far)
     print("Metrics after watermarking:")
     print(metrics_baseline_wm)
 
     # Compute metrics for template watermarked
-    metrics_baseline_wm_template = calculate_metrics(genuine_distances_wm_both, impostor_distances_wm_both, num_thresholds=args.thresholds)
+    metrics_baseline_wm_template = calculate_metrics(genuine_distances_wm_both, impostor_distances_wm_both, num_thresholds=args.thresholds,
+                                                     target_far=target_far)
     print("Metrics after watermarking both:")
     print(metrics_baseline_wm_template)
 
@@ -382,56 +490,57 @@ def main() -> None:
         pd.DataFrame(impostor_pairs, columns=['id_a', 'id_b']).to_excel(output_dir / f'{args.dataset}_impostor_pairs.xlsx', index=False)
     
     print(f"Saving results to {output_dir}...")
+    mtcnn_tag = 'mtcnn' if args.use_mtcnn else 'no-mtcnn'
     if genuine_distances_baseline:
         genuine_df = pd.DataFrame(genuine_distances_baseline, columns=['distance'])
         if args.format_evaluation == 'offline':
             # Save as csv
-            genuine_df.to_csv(output_dir / f'{args.metric}_genuine_distances_baseline.csv', index=False)
+            genuine_df.to_csv(output_dir / f'{args.metric}_genuine_distances_baseline_{mtcnn_tag}.csv', index=False)
         elif args.format_evaluation == 'online':
             # Save with npy tag
-            genuine_df.to_csv(output_dir / f'{args.metric}_genuine_distances_baseline_online.csv', index=False)
+            genuine_df.to_csv(output_dir / f'{args.metric}_genuine_distances_baseline_online_{mtcnn_tag}.csv', index=False)
         
     if impostor_distances_baseline:
         impostor_df = pd.DataFrame(impostor_distances_baseline, columns=['distance'])
         if args.format_evaluation == 'offline':
             # Save as csv
-            impostor_df.to_csv(output_dir / f'{args.metric}_impostor_distances_baseline.csv', index=False)
+            impostor_df.to_csv(output_dir / f'{args.metric}_impostor_distances_baseline_{mtcnn_tag}.csv', index=False)
         elif args.format_evaluation == 'online':
             # Save with npy tag
-            impostor_df.to_csv(output_dir / f'{args.metric}_impostor_distances_baseline_online.csv', index=False)
+            impostor_df.to_csv(output_dir / f'{args.metric}_impostor_distances_baseline_online_{mtcnn_tag}.csv', index=False)
     
     if genuine_distances_wm:
         genuine_wm_df = pd.DataFrame(genuine_distances_wm, columns=['distance'])
         if args.format_evaluation == 'offline':
-            genuine_wm_df.to_csv(output_dir / f'{args.metric}_genuine_distances_watermarked.csv', index=False)
+            genuine_wm_df.to_csv(output_dir / f'{args.metric}_genuine_distances_watermarked_{mtcnn_tag}.csv', index=False)
         elif args.format_evaluation == 'online':
-            genuine_wm_df.to_csv(output_dir / f'{args.metric}_genuine_distances_watermarked_online.csv', index=False)
+            genuine_wm_df.to_csv(output_dir / f'{args.metric}_genuine_distances_watermarked_online_{mtcnn_tag}.csv', index=False)
 
     if impostor_distances_wm:
         impostor_wm_df = pd.DataFrame(impostor_distances_wm, columns=['distance'])
         if args.format_evaluation == 'offline':
-            impostor_wm_df.to_csv(output_dir / f'{args.metric}_impostor_distances_watermarked.csv', index=False)
+            impostor_wm_df.to_csv(output_dir / f'{args.metric}_impostor_distances_watermarked_{mtcnn_tag}.csv', index=False)
         elif args.format_evaluation == 'online':
-            impostor_wm_df.to_csv(output_dir / f'{args.metric}_impostor_distances_watermarked_online.csv', index=False)
+            impostor_wm_df.to_csv(output_dir / f'{args.metric}_impostor_distances_watermarked_online_{mtcnn_tag}.csv', index=False)
 
     if genuine_distances_wm_both:
         # both watermarked
         genuine_wm_both_df = pd.DataFrame(genuine_distances_wm_both, columns=['distance'])
         if args.format_evaluation == 'offline': 
-            genuine_wm_both_df.to_csv(output_dir / f'{args.metric}_genuine_distances_watermarked_both.csv', index=False)
+            genuine_wm_both_df.to_csv(output_dir / f'{args.metric}_genuine_distances_watermarked_both_{mtcnn_tag}.csv', index=False)
         elif args.format_evaluation == 'online':
-            genuine_wm_both_df.to_csv(output_dir / f'{args.metric}_genuine_distances_watermarked_both_online.csv', index=False)
+            genuine_wm_both_df.to_csv(output_dir / f'{args.metric}_genuine_distances_watermarked_both_online_{mtcnn_tag}.csv', index=False)
 
     if impostor_distances_wm_both:
         impostor_wm_both_df = pd.DataFrame(impostor_distances_wm_both, columns=['distance'])
         if args.format_evaluation == 'offline':
-            impostor_wm_both_df.to_csv(output_dir / f'{args.metric}_impostor_distances_watermarked_both.csv', index=False)
+            impostor_wm_both_df.to_csv(output_dir / f'{args.metric}_impostor_distances_watermarked_both_{mtcnn_tag}.csv', index=False)
         elif args.format_evaluation == 'online':
-            impostor_wm_both_df.to_csv(output_dir / f'{args.metric}_impostor_distances_watermarked_both_online.csv', index=False)
-    
+            impostor_wm_both_df.to_csv(output_dir / f'{args.metric}_impostor_distances_watermarked_both_online_{mtcnn_tag}.csv', index=False)
+
     # Store the results in a new summary json file for recognition
     recognition_summary_path = Path(f'output/recognition/{args.watermarking_model}/{args.experiment_name}/{args.train_dataset}/{args.dataset}/facenet')
-    results_filepath = recognition_summary_path / f"results_summary.json"
+    results_filepath = recognition_summary_path / f"results_summary_{mtcnn_tag}.json"
 
     results_data = {}
     results_data['average_distances'] = {
@@ -485,7 +594,7 @@ def main() -> None:
         with open(results_filepath, "w") as f:
             json.dump(results_data, f, indent=2)
     elif args.format_evaluation == 'online':
-        new_path = results_filepath.with_name("results_summary_online.json")
+        new_path = results_filepath.with_name(f"results_summary_online_{mtcnn_tag}.json")
         with open(new_path, "w") as f:
             json.dump(results_data, f, indent=2)
 

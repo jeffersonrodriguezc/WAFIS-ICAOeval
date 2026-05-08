@@ -63,15 +63,15 @@ def load_distances(
 ) -> Dict[str, Dict[str, np.ndarray]]:
     """Carga los CSVs de distancias para un experimento+dataset+métrica, opcionalmente 'watermarked_both'."""
     files = {
-        ('genuine', 'baseline'):     f"{metric}_genuine_distances_baseline.csv",
-        ('genuine', 'watermarked'):  f"{metric}_genuine_distances_watermarked.csv",
-        ('impostor', 'baseline'):    f"{metric}_impostor_distances_baseline.csv",
-        ('impostor', 'watermarked'): f"{metric}_impostor_distances_watermarked.csv",
+        ('genuine', 'baseline'):     f"{metric}_genuine_distances_baseline_online_mtcnn.csv",
+        ('genuine', 'watermarked'):  f"{metric}_genuine_distances_watermarked_online_mtcnn.csv",
+        ('impostor', 'baseline'):    f"{metric}_impostor_distances_baseline_online_mtcnn.csv",
+        ('impostor', 'watermarked'): f"{metric}_impostor_distances_watermarked_online_mtcnn.csv",
     }
     if include_wm_both:
         files.update({
-            ('genuine', 'watermarked_both'):  f"{metric}_genuine_distances_watermarked_both.csv",
-            ('impostor', 'watermarked_both'): f"{metric}_impostor_distances_watermarked_both.csv",
+            ('genuine', 'watermarked_both'):  f"{metric}_genuine_distances_watermarked_both_online_mtcnn.csv",
+            ('impostor', 'watermarked_both'): f"{metric}_impostor_distances_watermarked_both_online_mtcnn.csv",
         })
     
     dataset_dir = Path(exp_path) / train_dataset/ dataset / FRModel / 'distances'
@@ -393,7 +393,7 @@ def main():
     parser.add_argument("--metric", type=str, default="cosine",
                         help="Prefijo de métrica usado en los CSVs (ej., cosine).")
     parser.add_argument("--datasets", type=str, nargs="+",
-                        default=["CFD", "facelab_london", "LFW", "ONOT"],
+                        default=["CFD", "facelab_london", "LFW", "ONOT", "SCface", "ONOT_set1"],
                         help="Nombres de carpetas de datasets a incluir.")
     parser.add_argument("--train_dataset", type=str, default="celeba_hq",
                         choices=["celeba_hq", "coco"])
