@@ -1,0 +1,50 @@
+[
+  {
+    "run_id": 5,
+    "tag": "l2_arc_eps0.5_rec1",
+    "norm": "l2",
+    "white_box": "arcface",
+    "black_box": "facenet",
+    "eps": 0.5,
+    "adv_weight": 1.0,
+    "rec_weight": 1.0,
+    "step_size": 0.041666666666666664,
+    "pgd_steps": 180
+  },
+  {
+    "run_id": 6,
+    "tag": "l2_arc_eps1_rec1",
+    "norm": "l2",
+    "white_box": "arcface",
+    "black_box": "facenet",
+    "eps": 1,
+    "adv_weight": 1.0,
+    "rec_weight": 1.0,
+    "step_size": 0.08333333333333333,
+    "pgd_steps": 180
+  },
+  {
+    "run_id": 7,
+    "tag": "l2_arc_eps2_rec1",
+    "norm": "l2",
+    "white_box": "arcface",
+    "black_box": "facenet",
+    "eps": 2,
+    "adv_weight": 1.0,
+    "rec_weight": 1.0,
+    "step_size": 0.16666666666666666,
+    "pgd_steps": 180
+  },
+  {
+    "run_id": 8,
+    "tag": "l2_arc_eps3_rec1",
+    "norm": "l2",
+    "white_box": "arcface",
+    "black_box": "facenet",
+    "eps": 3,
+    "adv_weight": 1.0,
+    "rec_weight": 1.0,
+    "step_size": 0.25,
+    "pgd_steps": 180
+  }
+]

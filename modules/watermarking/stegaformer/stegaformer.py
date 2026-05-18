@@ -18,6 +18,42 @@ from modules import Downsample, Upsample, Msg_Block, InputProj, BasicLayer, Basi
 
 # Encoder for Stegaformer
 
+def build_models(args, build = 'decoder'):
+    # WARNING: THIS ONLY WORKS FPR 1BPP
+    bpp = args.bpp
+    message_L = 16*bpp
+    scale = 2
+    encoder_eb_dim = int(message_L*scale)
+    decoder_eb_dim = int(message_L*scale)
+    query_type = 'im'
+    win_size = 16
+    msg_pose = 'learn'
+
+    # Mirror train.py variants
+    print("Using stegaformer with custom depth and parameters")
+    if build == 'encoder':
+        encoder = Encoder(msg_L=message_L, embed_dim=encoder_eb_dim, 
+                      Q=query_type, win_size=win_size, msg_pose=msg_pose)
+        
+        return encoder
+    
+    elif build == 'decoder':
+        decoder = Decoder(img_size=256, msg_L=message_L, embed_dim=decoder_eb_dim,
+                       win_size=win_size, msg_pose=msg_pose) 
+        return decoder
+    
+    elif build == 'both':
+        encoder = Encoder(msg_L=message_L, embed_dim=encoder_eb_dim, 
+                      Q=query_type, win_size=win_size, msg_pose=msg_pose)
+    
+        decoder = Decoder(img_size=256, msg_L=message_L, embed_dim=decoder_eb_dim,
+                       win_size=win_size, msg_pose=msg_pose)  
+
+        return encoder, decoder   
+    
+    else:
+        raise ValueError(f"Unknown use_model: {args.use_model}")
+
 class Encoder(nn.Module):
     def __init__(self, img_size=256, dd_in=3, msg_L=16, Q='im',
                  embed_dim=32, depths=[1, 1, 1, 1, 1, 1, 1], num_heads=[2, 2, 2, 2, 2, 2, 2],

@@ -21,17 +21,18 @@ def load_and_preprocess_image(image_path: Path,
     if image_format == 'png':
         img = Image.open(image_path).convert('RGB')
         img_cover = ImageOps.fit(img, (im_size,im_size))
-        image_tensor = transforms.ToTensor()(img_cover)
+        #image_tensor = transforms.ToTensor()(img_cover)
+        image_tensor = torch.from_numpy(np.array(img_cover)).permute(2, 0, 1).float()
 
     elif image_format == 'npy':
-        arr = np.load(image_path, allow_pickle=True)  
-        img_cover = np.transpose(arr, (2, 0, 1))  # H,W,C -> C,H,W 
+        img_cover = np.load(image_path, allow_pickle=True)  
+        img_cover = np.transpose(img_cover, (2, 0, 1))  # H,W,C -> C,H,W 
         # avoid normalization again (remember that npy are saved in [0,1])
         image_tensor = torch.from_numpy(img_cover)
     else:
         raise ValueError(f"Unsupported image format: {image_format}")
 
-    return image_tensor 
+    return image_tensor
 
 def alignment(images, size=(112, 112)):
   return F.interpolate(
@@ -79,7 +80,7 @@ def l2_project(delta, epsilon):
         This is done by scaling delta if its L2 norm exceeds epsilon.
         If the L2 norm of delta is less than or equal to epsilon, it is returned unchanged.
     """
-    delta_norm = torch.norm(delta.view(delta.size(0), -1), dim=1, keepdim=True)
+    delta_norm = torch.norm(delta.view(delta.size(0), -1), dim=1).view(-1, 1, 1, 1)
     factor = torch.clamp(epsilon / (delta_norm + 1e-12), max=1.0)
     return delta * factor
 
@@ -89,7 +90,7 @@ def pgd_step(delta, grad, step_size):
     """
     # 1. Calculate the L2 norm of the gradient for each element in the batch
     # .view(N, -1) flattens the tensor while keeping the batch dimension, to calculate the norm per element.
-    grad_norm = torch.norm(grad.view(grad.size(0), -1), dim=1, keepdim=True)
+    grad_norm = torch.norm(grad.view(grad.size(0), -1), dim=1).view(-1, 1, 1, 1)
     
     # 2. Normalize the gradient
     # We divide the gradient by its norm. Now 'normalized_grad' has length 1.
@@ -99,6 +100,8 @@ def pgd_step(delta, grad, step_size):
     # 3. Update delta by moving in the direction of the negative normalized gradient, scaled by the step size.
     # We subtract the gradient to MINIMIZE the loss function.
     return delta - step_size * normalized_grad    
+
+
 
 def pgd_step_linf_masked(delta, grad, step_size, mask):
     """
@@ -182,10 +185,10 @@ def compute_sobel_edges_mask(img_wm, threshold=0.5, invert = False):
     # A small epsilon (1e-6) is added to avoid numerical instability (derivative of sqrt at 0)
     magnitude = torch.sqrt(grad_x ** 2 + grad_y ** 2 + 1e-6)
 
-    binary_mask = get_binary_mask(magnitude, threshold=0.5)
+    binary_mask = get_binary_mask(magnitude, threshold=threshold)
 
     if invert:
-        return -1 - binary_mask
+        return 1 - binary_mask
     else:
         return binary_mask
 
@@ -193,3 +196,24 @@ def get_binary_mask(magnitude, threshold=0.2):
     # Return True where edges exist otherwise returns False
     mask = (magnitude > threshold).float()
     return mask
+
+def generate_face_box_mask(box, img_shape, device):
+    """
+    Builds a binary mask from MTCNN bounding box output.
+    MTCNN box format: [x1, y1, x2, y2] in pixel coordinates.
+    Returns: [B, C, H, W] mask — 1=attack (smooth face region), 0=skip
+    """
+    B, C, H, W = img_shape
+    mask = torch.zeros(B, 1, H, W, device=device)
+    
+    for b in range(B):
+        x1, y1, x2, y2 = box[b]
+        x1 = max(0, int(x1))
+        y1 = max(0, int(y1))
+        x2 = min(W, int(x2))
+        y2 = min(H, int(y2))
+        mask[b, :, y1:y2, x1:x2] = 1.0
+
+    return mask
+
+

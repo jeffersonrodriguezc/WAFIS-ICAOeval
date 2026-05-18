@@ -1,6 +1,6 @@
 # modules/recognition/FaceNet/facenet_recognizer.py
 import torch
-from typing import Optional, Tuple, Union
+from typing import List, Optional, Tuple, Union
 from facenet_pytorch import InceptionResnetV1, MTCNN, fixed_image_standardization
  # InceptionResnetV1 as a facenet backbone
 from PIL import Image
@@ -10,6 +10,7 @@ import numpy as np
 import os 
 import torch.nn.functional as F
 from torchvision.transforms.functional import to_tensor as tv_to_tensor
+import torchvision
 
 # utils_viz_mtcnn.py
 from pathlib import Path
@@ -18,6 +19,104 @@ import numpy as np
 import torch
 from PIL import Image
 import cv2
+from skimage import transform as trans
+
+arcface_dst = np.array(
+    [[38.2946, 51.6963], [73.5318, 51.5014], [56.0252, 71.7366],
+     [41.5493, 92.3655], [70.7299, 92.2041]],
+    dtype=np.float32)
+
+def compare_crops_interactive(
+    imgs, boxes_list, landmarks_list,
+    image_size=160, max_show=4,
+    save_path="./output/debug_compare_crops.png"
+):
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    
+    if imgs.dim() == 3:
+        imgs = imgs.unsqueeze(0)
+    
+    B = min(imgs.shape[0], max_show)
+    fig, axes = plt.subplots(B, 3, figsize=(9, 3 * B))
+    if B == 1:
+        axes = axes[None, :]
+    
+    for i in range(B):
+        # Original crop (numpy/cv2 path)
+        crop_orig = _extract_face_float(
+            imgs[i], boxes_list[i], image_size=image_size
+        )
+        
+        # Differentiable crop (grid_sample path)
+        crop_diff = _extract_face_differentiable_batch(
+            imgs[i:i+1], [boxes_list[i]], [landmarks_list[i]], image_size=image_size
+        ).squeeze(0)
+        
+        # Input
+        img_np = imgs[i].detach().cpu().permute(1, 2, 0).numpy()
+        axes[i, 0].imshow(np.clip(img_np, 0, 1))
+        axes[i, 0].set_title(f"Input [{i}]")
+        axes[i, 0].axis("off")
+        
+        # Original crop
+        co_np = crop_orig.detach().cpu().permute(1, 2, 0).numpy()
+        if co_np.max() > 1.0:
+            co_np = co_np / 255.0
+        axes[i, 1].imshow(np.clip(co_np, 0, 1))
+        axes[i, 1].set_title(f"Original (cv2)")
+        axes[i, 1].axis("off")
+        
+        # Differentiable crop
+        cd_np = crop_diff.detach().cpu().permute(1, 2, 0).numpy()
+        axes[i, 2].imshow(np.clip(cd_np, 0, 1))
+        axes[i, 2].set_title(f"Differentiable")
+        axes[i, 2].axis("off")
+    
+    fig.suptitle("Original vs Differentiable Crop", fontsize=14)
+    plt.tight_layout()
+    fig.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    print(f"[debug] saved → {save_path}")
+
+def show_input_vs_crop_interactive(
+    original, face_crop, title="Input vs Crop", max_show=8, 
+    save_path="./output/debug_crop.png"
+):
+    import matplotlib
+    matplotlib.use('Agg')  # backend sin display
+    import matplotlib.pyplot as plt
+    
+    if original.dim() == 3:
+        original = original.unsqueeze(0)
+    if face_crop.dim() == 3:
+        face_crop = face_crop.unsqueeze(0)
+    
+    B = min(original.shape[0], max_show)
+    
+    fig, axes = plt.subplots(B, 2, figsize=(6, 3 * B))
+    if B == 1:
+        axes = axes[None, :]
+    
+    for i in range(B):
+        img_np = original[i].detach().cpu().permute(1, 2, 0).numpy()
+        axes[i, 0].imshow(np.clip(img_np, 0, 1))
+        axes[i, 0].set_title(f"Input [{i}]")
+        axes[i, 0].axis("off")
+        
+        crop_np = face_crop[i].detach().cpu().permute(1, 2, 0).numpy()
+        #crop_np = crop_np * 255.0
+        #crop_np = crop_np.astype(np.uint8)
+        axes[i, 1].imshow(np.clip(crop_np, 0, 1))
+        axes[i, 1].set_title(f"Crop [{i}]")
+        axes[i, 1].axis("off")
+    
+    fig.suptitle(title, fontsize=14)
+    plt.tight_layout()
+    fig.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    print(f"[debug] saved → {save_path}")
 
 def _to_hwc_uint8_for_viz(x: Union[Image.Image, np.ndarray, torch.Tensor]) -> Image.Image:
     """Convierte PIL/np/tensor a PIL RGB para visualizar (uint8), exprimiendo dims=1 si existen."""
@@ -151,6 +250,109 @@ def show_input_vs_mtcnn_output_old(original: Union[Image.Image, np.ndarray, torc
     #print(f"[viz] saved -> {out_path}")
     return out_path
 
+def estimate_norm(lmk, image_size=160):
+    assert lmk.shape == (5, 2)
+    assert image_size%160==0 
+
+    lmk = np.array(lmk, dtype=np.float64)
+
+    ratio = float(image_size) / 112.0 # based on arcface
+    dst = (arcface_dst * ratio).astype(np.float64)
+
+    tform = trans.SimilarityTransform()
+    tform.estimate(lmk, dst)
+    M = tform.params[0:2, :]
+    return M
+
+def norm_crop_differentiable(img_tensor, landmark, image_size=112):
+    """
+    Differentiable version of norm_crop.
+    """
+    M = estimate_norm(landmark, image_size)  # forward: lmk → arcface_dst
+    
+    # cv2.warpAffine invierte M internamente — replicamos eso
+    M_3x3 = np.vstack([M, [0, 0, 1]])
+    M_inv = np.linalg.inv(M_3x3)[:2, :]  # inverse: arcface_dst → lmk
+    
+    C, H, W = img_tensor.shape
+    device = img_tensor.device
+    
+    # Build output pixel grid
+    ys = torch.arange(image_size, dtype=torch.float32, device=device)
+    xs = torch.arange(image_size, dtype=torch.float32, device=device)
+    grid_y, grid_x = torch.meshgrid(ys, xs, indexing='ij')
+    ones = torch.ones_like(grid_x)
+    dst_coords = torch.stack([grid_x, grid_y, ones], dim=-1)  # [H_out, W_out, 3]
+    
+    # Apply M_inv: src_pixel = M_inv @ dst_pixel
+    M_inv_t = torch.tensor(M_inv, dtype=torch.float32, device=device)
+    src_coords = torch.einsum('ij,hwj->hwi', M_inv_t, dst_coords)  # [H_out, W_out, 2]
+    
+    # Normalize to [-1, 1] for grid_sample
+    src_coords[..., 0] = 2.0 * src_coords[..., 0] / (W - 1) - 1.0
+    src_coords[..., 1] = 2.0 * src_coords[..., 1] / (H - 1) - 1.0
+    
+    grid = src_coords.unsqueeze(0)  # [1, H_out, W_out, 2]
+    warped = F.grid_sample(img_tensor.unsqueeze(0), grid, 
+                           mode='bilinear', padding_mode='zeros', 
+                           align_corners=True)
+    
+    return warped.squeeze(0)
+
+def crop_resize_differentiable(img_tensor, box, image_size):
+    """
+    Differentiable version of crop_resize.
+    Square crop centered on face + resize via grid_sample.
+    
+    Args:
+        img_tensor: [C, H, W] torch tensor (may carry grad)
+        box: list/array [x1, y1, x2, y2] - constant from MTCNN
+        image_size: output size (square)
+    
+    Returns:
+        [C, image_size, image_size] torch tensor preserving gradient graph
+    """
+    C, H, W = img_tensor.shape
+    
+    # --- Replicate EXACT same crop geometry as original ---
+    x1, y1, x2, y2 = map(int, box)
+    w = max(1, x2 - x1)
+    h = max(1, y2 - y1)
+
+    s = max(w, h)
+    cx = x1 + w / 2.0
+    cy = y1 + h / 2.0
+
+    x0 = int(round(cx - s / 2.0))
+    y0 = int(round(cy - s / 2.0))
+
+    # Shift window to stay inside image (keeps square)
+    x0 = min(max(0, x0), max(0, W - s))
+    y0 = min(max(0, y0), max(0, H - s))
+    
+    # --- Compute theta: maps dst [-1,1] → src [-1,1] ---
+    # dst pixel 0         → src pixel x0       → src_norm = 2*x0/(W-1) - 1
+    # dst pixel size-1    → src pixel x0+s-1   → src_norm = 2*(x0+s-1)/(W-1) - 1
+    # Linear map: src_norm = a * dst_norm + b
+    
+    a_x = (s - 1.0) / (W - 1.0)
+    b_x = (2.0 * x0 + s - 1.0) / (W - 1.0) - 1.0
+    a_y = (s - 1.0) / (H - 1.0)
+    b_y = (2.0 * y0 + s - 1.0) / (H - 1.0) - 1.0
+    
+    theta = torch.tensor([
+        [a_x,  0,   b_x],
+        [0,    a_y, b_y]
+    ], dtype=torch.float32, device=img_tensor.device).unsqueeze(0)  # [1, 2, 3]
+    
+    grid = F.affine_grid(theta, [1, C, image_size, image_size], 
+                         align_corners=True)
+    cropped = F.grid_sample(img_tensor.unsqueeze(0), grid, 
+                            mode='bilinear', padding_mode='zeros', 
+                            align_corners=True)
+    
+    return cropped.squeeze(0)  # [C, image_size, image_size]
+
 def crop_resize(img, box, image_size):
     """
     box: (x1, y1, x2, y2) in pixel coords, x2/y2 exclusive-style is fine too (we resize anyway).
@@ -225,10 +427,12 @@ def _extract_face_float(img, box, image_size=160, margin=0, save_path=None):
     """
     # --- Convert to numpy HWC float32 ---
     if isinstance(img, torch.Tensor):
+        if img.dim() == 4:
+            img = img.squeeze(0) 
         if img.dim() == 3 and img.shape[0] in (1, 3):
-            img = img.permute(1, 2, 0).cpu().numpy()
+            img = img.permute(1, 2, 0).detach().cpu().numpy()
         elif img.dim() == 3 and img.shape[2] in (1, 3):
-            img = img.cpu().numpy()
+            img = img.detach().cpu().numpy()
         else:
             raise ValueError(f"Unsupported tensor shape: {tuple(img.shape)}")
     elif isinstance(img, np.ndarray):
@@ -259,6 +463,45 @@ def _extract_face_float(img, box, image_size=160, margin=0, save_path=None):
     face_t = torch.from_numpy(face_np.copy()).permute(2, 0, 1).float()
 
     return face_t
+
+def _extract_face_differentiable_batch(imgs, boxes_list, landmarks_list, image_size=160, margin=0):
+    """
+    Differentiable batch face extraction.
+    No numpy conversion — stays in torch preserving gradients.
+    
+    Args:
+        imgs: [B, C, H, W] torch tensor (may carry grad from x_adv)
+        boxes_list: list of B np.ndarray (4,) - constants from MTCNN
+        landmarks_list: list of B np.ndarray (5,2) or None - constants from MTCNN
+        image_size: output face size
+        margin: margin around face (default 0)
+    
+    Returns:
+        [B, C, image_size, image_size] torch tensor preserving gradient graph
+    """
+    B, C, H, W = imgs.shape
+    faces = []
+    
+    for i in range(B):
+        img = imgs[i]  # [C, H, W] — preserves grad via indexing
+        
+        if landmarks_list[i] is not None:
+            face = norm_crop_differentiable(img, landmarks_list[i], image_size=image_size)
+        else:
+            margin_adj = [
+                margin * (boxes_list[i][2] - boxes_list[i][0]) / (image_size - margin),
+                margin * (boxes_list[i][3] - boxes_list[i][1]) / (image_size - margin),
+            ]
+            x1 = int(max(boxes_list[i][0] - margin_adj[0] / 2, 0))
+            y1 = int(max(boxes_list[i][1] - margin_adj[1] / 2, 0))
+            x2 = int(min(boxes_list[i][2] + margin_adj[0] / 2, W))
+            y2 = int(min(boxes_list[i][3] + margin_adj[1] / 2, H))
+            
+            face = crop_resize_differentiable(img, [x1, y1, x2, y2], image_size)
+        
+        faces.append(face)
+    
+    return torch.stack(faces, dim=0)  # [B, C, image_size, image_size]
 
 def _extract_face_float_v2(img, box, image_size=160, margin=0, save_path=None):
     """
@@ -360,7 +603,7 @@ def _PIL_numpy_to_tensor(img_any, to_CHW: bool = False) -> torch.Tensor:
 
     raise TypeError(f"Unsupported type: {type(img_any)}")
 
-def preprocess_for_facenet(img_any, to_CHW: bool = False, TARGET: tuple = (160, 160)) -> torch.Tensor:
+def preprocess_for_facenet(img_any, to_CHW: bool = False, TARGET: tuple = (160, 160), device: str = 'cpu') -> torch.Tensor:
     """
     Returns a tensor [1,3,S,S] ready for FaceNet:
     - Float32 in [0,1] after fixed_image_standardization
@@ -373,17 +616,23 @@ def preprocess_for_facenet(img_any, to_CHW: bool = False, TARGET: tuple = (160, 
         #chw = chw.unsqueeze(0)  # [1,3,H,W]
     
     # 2) standardize (FaceNet expects fixed_image_standardization)   
+    if img_any.max() <= 1.0:
+        img_any = img_any * 255.0 # fixed image standardization waits for [0,255] input
+
+    #print('range before standardization:', img_any.min().item(), img_any.max().item())
+    #print("shape before standardization:", img_any.shape)
+    
     chw_std = fixed_image_standardization(img_any)  # [3,S,S], float32
     #print('preprocess_for_facenet - after standardization: size:', chw_std.shape, 'dtype:', chw_std.dtype, 'min:', chw_std.min().item(), 'max:', chw_std.max().item())
     # 4) resize
-    if chw_std.shape[-2:] != torch.Size(list(TARGET)):
-        chw_std = F.interpolate(
-            chw_std,
-            size=TARGET,
-            mode='bilinear',
-            align_corners=False
-        )       
-    return chw_std  # ready for FaceNet
+    #if chw_std.shape[-2:] != torch.Size(list(TARGET)):
+    #    chw_std = F.interpolate(
+    #        chw_std,
+    #        size=TARGET,
+    #        mode='bilinear',
+    #        align_corners=False
+    #    )       
+    return chw_std.to(device)  # ready for FaceNet
 
 class FaceNetRecognizer:
     """
@@ -429,9 +678,14 @@ class FaceNetRecognizer:
         if self.mtcnn is None:
             return None
         
+        if img.max() > 1.0:
+            img = img/255.0
+        
         # Convert to PIL for detection (MTCNN.detect expects PIL or uint8)
         if isinstance(img, Image.Image):
             detect_img = img
+        if isinstance(img, torch.Tensor):
+            detect_img = torchvision.transforms.ToPILImage()(img.squeeze(0))
         else:
             raise TypeError(f"Unsupported image type: {type(img)}")
         
@@ -440,6 +694,48 @@ class FaceNetRecognizer:
         if boxes is not None and len(boxes) > 0:
             return boxes[0]  # first (most prominent) face
         return None    
+
+    def detect_boxes_batch(self, imgs) -> Tuple[List[Optional[np.ndarray]], List[Optional[np.ndarray]]]:
+        """
+        Run MTCNN face detection on a batch of images.
+        
+        Args:
+            imgs: torch.Tensor of shape [B, C, H, W] normalized [0, 1] or [0, 255]
+        
+        Returns:
+            Tuple of (boxes_list, landmarks_list) where each is a list of B elements.
+            Each element is np.ndarray or None if no face detected.
+            boxes: shape (4,) with [x1, y1, x2, y2]
+            landmarks: shape (5, 2) with 5 facial keypoints
+        """
+        if self.mtcnn is None:
+            return [None] * imgs.shape[0], [None] * imgs.shape[0]
+        
+        B = imgs.shape[0]
+        
+        # Normalize if needed because our standard is always a 0-1 range
+        if imgs.max() > 1.0:
+            imgs = imgs / 255.0
+        
+        # Convert batch to list of PIL images
+        pil_imgs = [torchvision.transforms.ToPILImage()(imgs[i]) for i in range(B)]
+        
+        # Batch detection
+        boxes_batch, _, landmarks_batch = self.mtcnn.detect(pil_imgs, landmarks=True)
+        
+        # Process results: extract first (most prominent) face per image
+        boxes_list = []
+        landmarks_list = []
+        
+        for i in range(B):
+            if boxes_batch[i] is not None and len(boxes_batch[i]) > 0:
+                boxes_list.append(boxes_batch[i][0])  # first face box
+                landmarks_list.append(landmarks_batch[i][0])  # first face landmarks
+            else:
+                boxes_list.append(None)
+                landmarks_list.append(None)
+        
+        return boxes_list, landmarks_list
     
     # --------------------------------------------------------------------- #
     # Embed with precomputed box (float-safe, no uint8 quantization)
@@ -468,6 +764,39 @@ class FaceNetRecognizer:
             embedding = self.model(tensor)
         
         return embedding.squeeze(0)  
+    
+    def embed_batch_with_boxes(self, imgs, boxes_list, landmarks_list, requires_grad=True):
+        """
+        Batch embedding with optional gradient flow.
+        
+        Args:
+            imgs: [B, C, H, W] torch tensor
+            boxes_list: list of B boxes
+            landmarks_list: list of B landmarks
+            requires_grad: If True, preserves gradients (for PGD loop)
+        
+        Returns: [B, 512] embeddings
+        """
+        # Crop diferenciable 
+        faces = _extract_face_differentiable_batch(
+            imgs, boxes_list, landmarks_list, image_size=self.IMG_SIZE, margin=0
+        )  # [B, C, H, W] #[None,None] to test without landmarks
+        
+        # debug
+        #show_input_vs_crop_interactive(imgs, faces, title="face verification batch crop")
+
+        # Preprocess
+        faces = preprocess_for_facenet(faces, device=self.device, 
+                                    TARGET=(self.IMG_SIZE, self.IMG_SIZE))
+        
+        # Forward con o sin gradientes
+        if requires_grad:
+            embeddings = self.model(faces)  # SIN torch.no_grad()
+        else:
+            with torch.no_grad():
+                embeddings = self.model(faces)
+        
+        return embeddings  # [B, 512]    
 
     # --------------------------------------------------------------------- #
     # get_embedding_and_box: detect + embed, return both

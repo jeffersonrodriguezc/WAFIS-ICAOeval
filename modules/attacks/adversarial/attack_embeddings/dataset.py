@@ -26,9 +26,9 @@ class WatermarkedDataset(Dataset):
                 dataset: str = 'CFD',
                 identities: list = None,
                 train_dataset: str = 'celeba_hq',
-                wm_algorithm: str = 'StegFormer',
+                wm_algorithm: str = 'stegaformer',
                 experiment_name: str = '1_1_255_w16_learn_im',
-                IMG_EXTENSION: str = 'npy',
+                IMG_EXTENSION: str = 'png',
                 max_images: int = None,
                 ori_data_path: str = None,
                 bpp: int = 1,
@@ -143,7 +143,8 @@ class WatermarkedDataset(Dataset):
         if self.wm_algorithm.lower() == 'stegformer':
             messages = symbols_to_message_image(real_wm, self.bpp, (self.im_size[0], self.im_size[1])) 
         elif self.wm_algorithm.lower() == 'stegaformer':
-            pass       
+            messages = real_wm.reshape((64*64, 16*1)) # not normalize
+            messages = torch.from_numpy(messages).float()
 
         org_full_path = os.path.join(self.ori_data_path, filename.replace(old_ext, self.org_ext))
         ori_img = load_and_preprocess_image(org_full_path, self.im_size[0], 'png')
@@ -156,9 +157,9 @@ class FaceAttackedDataset(Dataset):
                 image_size: tuple = (256, 256),
                 dataset: str = 'CFD',
                 train_dataset: str = 'celeba_hq',
-                wm_algorithm: str = 'StegFormer',
+                wm_algorithm: str = 'stegaformer',
                 experiment_name: str = '1_1_255_w16_learn_im',
-                IMG_EXTENSION: str = 'npy',
+                IMG_EXTENSION: str = 'png',
                 max_images: int = None,
                 ori_data_path: str = None,
                 bpp: int = 1,
@@ -261,8 +262,8 @@ class FaceAttackedDataset(Dataset):
         attack_path = self.attack_paths[index]
 
         # load and process the watermarked image (to get the filename and the identity)
-        wm_img = load_and_preprocess_image(wm_path.replace('.png', '.npy'), 
-                                             self.im_size[0], self.IMG_EXTENSION)
+        wm_img = load_and_preprocess_image(wm_path, #.replace('.png', '.npy')
+                                             self.im_size[0], self.IMG_EXTENSION) #self.IMG_EXTENSION
         
         # get the template image
         template_img = load_and_preprocess_image(template_path, 
@@ -270,7 +271,7 @@ class FaceAttackedDataset(Dataset):
         
         # get the attacked image
         attacked_img = load_and_preprocess_image(attack_path.replace('.png', '.npy'), 
-                                           self.im_size[0], self.IMG_EXTENSION)
+                                           self.im_size[0], 'npy')
         
         filename = os.path.basename(template_path).split('.')[0]
 

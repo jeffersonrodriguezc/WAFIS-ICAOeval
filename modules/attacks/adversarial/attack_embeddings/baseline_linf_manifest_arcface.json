@@ -1,0 +1,50 @@
+[
+  {
+    "run_id": 0,
+    "tag": "linf_arc_eps2_rec1",
+    "norm": "linf",
+    "white_box": "arcface",
+    "black_box": "facenet",
+    "eps": 2,
+    "adv_weight": 1.0,
+    "rec_weight": 1.0,
+    "step_size": 0.001,
+    "pgd_steps": 80
+  },
+  {
+    "run_id": 1,
+    "tag": "linf_arc_eps4_rec1",
+    "norm": "linf",
+    "white_box": "arcface",
+    "black_box": "facenet",
+    "eps": 4,
+    "adv_weight": 1.0,
+    "rec_weight": 1.0,
+    "step_size": 0.001,
+    "pgd_steps": 80
+  },
+  {
+    "run_id": 2,
+    "tag": "linf_arc_eps6_rec1",
+    "norm": "linf",
+    "white_box": "arcface",
+    "black_box": "facenet",
+    "eps": 6,
+    "adv_weight": 1.0,
+    "rec_weight": 1.0,
+    "step_size": 0.001,
+    "pgd_steps": 80
+  },
+  {
+    "run_id": 3,
+    "tag": "linf_arc_eps8_rec1",
+    "norm": "linf",
+    "white_box": "arcface",
+    "black_box": "facenet",
+    "eps": 8,
+    "adv_weight": 1.0,
+    "rec_weight": 1.0,
+    "step_size": 0.001,
+    "pgd_steps": 80
+  }
+]

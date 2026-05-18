@@ -7,23 +7,32 @@ import torchvision
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 import json
+from PIL import Image
 
 from dataset import WatermarkedDataset, FaceAttackedDataset
 from options.options import InjectionOptions
 from utils import l2_norm, alignment, tensor2img, pgd_step, l2_project, pgd_step_linf, linf_project, pgd_step_linf_masked
-from utils import generate_background_mask, compute_sobel_edges_mask
+from utils import compute_sobel_edges_mask, generate_face_box_mask
 from network.AAD import AADGenerator, FusionModule, get_spatial_weights_gauss
 from network.MAE import MLAttrEncoder
-from network.face_modules import Backbone, Backbone_facenet
-from criteria.loss_functions import RecLoss, AdvLoss
+from criteria.loss_functions import RecLoss, AdvLoss, FreqLoss
 from torch.utils.tensorboard import SummaryWriter
 from torchmetrics import PeakSignalNoiseRatio, StructuralSimilarityIndexMeasure
 from torch.optim.lr_scheduler import ExponentialLR
-from facenet_pytorch import fixed_image_standardization
+import torchvision.utils as vutils
 
-from watermarking.StegFormer.utils import get_message_accuracy 
+# temporal - to load the stegaformer decoder, we need to import the functions to build the model and load the weights
+import sys
+sys.path.insert(0, '/app/watermarking/stegaformer')
+
+from watermarking.StegFormer.utils import get_message_accuracy as get_message_accuracy_StegFormer
 from watermarking.StegFormer.utils import load_weights_decoder as load_weights_StegFormer
 from watermarking.StegFormer.model import build_models as build_stegformer_models
+from watermarking.stegaformer.stegaformer import build_models as build_stegaformer_models
+from watermarking.stegaformer.utils import load_weights_decoder as load_weights_StegFormer 
+from watermarking.stegaformer.utils import get_message_accuracy as get_message_accuracy_StegaFormer
+from recognition.arcface.recognizer import ArcFaceRecognizer, compare_crops_interactive as compare_crops_interactive_arcface
+from recognition.facenet.recognizer import FaceNetRecognizer, compare_crops_interactive as compare_crops_interactive_facenet
 
 class AttackEmbeddings:
     def __init__(self, opts, wm_args):
@@ -38,7 +47,7 @@ class AttackEmbeddings:
         self.val_step_count = 0
         self.best_global_loss = float('inf')  
         self._set_seeds()
-        
+      
         # Directories to save results, checkpoints and logs
         if self.opts.baseline:
             self.folder_struct = "baseline"
@@ -52,11 +61,13 @@ class AttackEmbeddings:
         if not os.path.exists(os.path.join(self.output_to_save, self.folder_struct)):
             self.id_number_exp = "1"
             self.imgout_dir = os.path.join(self.output_to_save, self.folder_struct, self.id_number_exp, 'attacked_samples')
+            self.delta_dir = os.path.join(self.output_to_save, self.folder_struct, self.id_number_exp, 'deltas_samples')
             #self.records_dir = os.path.join(self.output_to_save, self.folder_struct, self.id_number_exp, 'attack_records')
             self.logs_dir = os.path.join(self.output_to_save, self.folder_struct, self.id_number_exp, 'logs')
             self.ckpt_dir = os.path.join(self.output_to_save, self.folder_struct, self.id_number_exp, 'checkpoints')
             # create folders
             os.makedirs(self.imgout_dir, exist_ok=True)
+            os.makedirs(self.delta_dir, exist_ok=True)
             os.makedirs(self.ckpt_dir, exist_ok=True)
             os.makedirs(self.logs_dir, exist_ok=True)
             #os.makedirs(self.records_dir, exist_ok=True)
@@ -70,11 +81,13 @@ class AttackEmbeddings:
             if self.opts.restore_training == False and self.opts.use_fusion_module == True and self.opts.baseline == False:
                 self.id_number_exp = str(int(last_id_exp) + 1)
                 self.imgout_dir = os.path.join(self.output_to_save, self.folder_struct, self.id_number_exp, 'attacked_samples')
+                self.delta_dir = os.path.join(self.output_to_save, self.folder_struct, self.id_number_exp, 'deltas_samples')
                 #self.records_dir = os.path.join(self.output_to_save, self.folder_struct, self.id_number_exp, 'attack_records')
                 self.logs_dir = os.path.join(self.output_to_save, self.folder_struct, self.id_number_exp, 'logs')
                 self.ckpt_dir = os.path.join(self.output_to_save, self.folder_struct, self.id_number_exp, 'checkpoints')
                 # create folders
                 os.makedirs(self.imgout_dir, exist_ok=True)
+                os.makedirs(self.delta_dir, exist_ok=True)
                 os.makedirs(self.ckpt_dir, exist_ok=True)
                 os.makedirs(self.logs_dir, exist_ok=True)
                 #os.makedirs(self.records_dir, exist_ok=True)
@@ -84,15 +97,18 @@ class AttackEmbeddings:
             elif self.opts.restore_training == True and self.opts.baseline == False and self.opts.use_fusion_module == True:
                 self.id_number_exp = str(last_id_exp)
                 self.imgout_dir = os.path.join(self.output_to_save, self.folder_struct, self.id_number_exp, 'attacked_samples')
+                self.delta_dir = os.path.join(self.output_to_save, self.folder_struct, self.id_number_exp, 'deltas_samples')
                 #self.records_dir = os.path.join(self.output_to_save, self.folder_struct, self.id_number_exp, 'attack_records')
                 self.logs_dir = os.path.join(self.output_to_save, self.folder_struct, self.id_number_exp, 'logs')
                 self.ckpt_dir = os.path.join(self.output_to_save, self.folder_struct, self.id_number_exp, 'checkpoints')            
             elif self.opts.baseline == True and self.opts.only_face_recognition_evaluation == False:
                 self.id_number_exp = str(int(last_id_exp) + 1)
                 self.imgout_dir = os.path.join(self.output_to_save, self.folder_struct, self.id_number_exp, 'attacked_samples')
+                self.delta_dir = os.path.join(self.output_to_save, self.folder_struct, self.id_number_exp, 'deltas_samples')
                 self.logs_dir = os.path.join(self.output_to_save, self.folder_struct, self.id_number_exp, 'logs')
                 # create folders
                 os.makedirs(self.imgout_dir, exist_ok=True)
+                os.makedirs(self.delta_dir, exist_ok=True)
                 os.makedirs(self.logs_dir, exist_ok=True)
                 #os.makedirs(self.records_dir, exist_ok=True)
                 os.makedirs(os.path.join(self.imgout_dir, 'train'), exist_ok=True)
@@ -100,7 +116,7 @@ class AttackEmbeddings:
             elif self.opts.baseline == True and self.opts.only_face_recognition_evaluation == True:
                 self.id_number_exp = str(self.opts.id_number_exp)
                 self.imgout_dir = os.path.join(self.output_to_save, self.folder_struct, self.id_number_exp, 'attacked_samples')
-
+                
         # save all the parameters of the experiment in a json file for later reference
         if self.opts.restore_training == False or self.opts.only_face_recognition_evaluation == True:
             self.save_params_to_json() 
@@ -109,10 +125,11 @@ class AttackEmbeddings:
 
         print("[*] Initializing Networks...") 
         # Face Recognition is always needed!
+
         print(f"[*] 1a. FaceNet Model ({opts.facenet_mode}) from {opts.facenet_dir}")
         print(f"[*] 1b. FaceNet Model for test ({opts.facenet_mode_test})")
-        self.facenet = self._load_facenet(self.opts.facenet_mode, self.opts.facenet_dir).to(self.device).eval()
-        self.facenet_test = self._load_facenet(self.opts.facenet_mode_test, None).to(self.device).eval()
+        self.facenet = self._load_facenet(self.opts.facenet_mode, self.opts.facenet_dir)
+        self.facenet_test = self._load_facenet(self.opts.facenet_mode_test, self.opts.facenet_dir_test)
 
         # Watermark Decoder (Black Box) is always needed to compute extraction metrics
         print(f"[*] 2. Watermark Decoder ({opts.wm_algorithm})") 
@@ -149,27 +166,35 @@ class AttackEmbeddings:
                 for m in [self.aadblocks, self.attencoder]:
                     for p in m.parameters(): p.requires_grad = False
 
-        # load the model to remove the background
-        print(f"[*] 6. Background Removal Model (DeepLabV3 ResNet101 pretrained on COCO)")
-        self.model_bga_seg = torchvision.models.segmentation.deeplabv3_resnet101(pretrained=True)
-        self.model_bga_seg.to(self.device)
-        self.model_bga_seg.eval()
-
         # Freeze the FaceNet and Watermark Decoder
-        for m in [self.facenet, self.facenet_test, self.wm_decoder]:
+        for m in [self.facenet.model, self.facenet_test.model, self.wm_decoder]:
             for p in m.parameters(): p.requires_grad = False
 
         print("[*] 7. Loss functions and metrics...")
         # loss functions and metrics
         self.rec_loss = RecLoss(opts.rec_weight, opts.recloss_mode, self.device, opts.mse_weight, opts.lpips_weight)
         self.adv_loss = AdvLoss(opts.adv_weight, self.device, mode='evasion')
-        self.cal_psnr = PeakSignalNoiseRatio().to(self.device)
-        self.cal_ssim = StructuralSimilarityIndexMeasure().to(self.device)
-        
+        self.freq_loss = FreqLoss(opts.freq_weight, device = self.device, loss_mode=opts.loss_mode, band="all", gamma=1.0)
+
+        if self.opts.wm_algorithm.lower() == 'stegaformer':
+            self.data_range = 255.0
+        elif self.opts.wm_algorithm.lower() == 'facesings':
+            self.data_range = 1.0
+        elif self.opts.wm_algorithm.lower() == 'stegformer':
+            self.data_range = 1.0
+
+        self.cal_psnr = PeakSignalNoiseRatio(data_range=self.data_range).to(self.device)
+        self.cal_ssim = StructuralSimilarityIndexMeasure(data_range=self.data_range).to(self.device)
+
         if self.opts.only_face_recognition_evaluation == False:
             print("[*] 8. Tensorboard Writer...")
             self.writer = SummaryWriter(log_dir=self.logs_dir,
                                     purge_step=self.global_step if self.opts.restore_training else None)
+            self.per_step_loss_buffer = []
+            self.per_step_delta_buffer = []
+            self.per_step_lrec_buffer = []
+            self.per_step_ladv_buffer = []
+            self.per_step_lfreq_buffer = []
 
         # create datasets and dataloaders
         print("[*] Preparing Datasets and Dataloaders...")
@@ -236,25 +261,38 @@ class AttackEmbeddings:
     def _load_facenet(self, facenet_mode=None, facenet_dir=None):
         # Simplificación de carga basada en tu script original
         if facenet_mode == 'arcface':
-            net = Backbone(input_size=112, num_layers=50, drop_ratio=0.6, mode='ir_se')
-            net.load_state_dict(torch.load(facenet_dir, map_location=self.device))
+            #net = Backbone(input_size=112, num_layers=50, drop_ratio=0.6, mode='ir_se')
+            #net.load_state_dict(torch.load(facenet_dir, map_location=self.device))
+            net = ArcFaceRecognizer(weight_path=facenet_dir, device=self.device, network='r100', use_mtcnn=True)
+
         elif facenet_mode == 'facenet':
-            net = Backbone_facenet(pretrained="vggface2").to(self.device)
+            #net = Backbone_facenet(pretrained="vggface2").to(self.device)
+            net = FaceNetRecognizer(device=self.device, use_mtcnn=True) #pretrained='vggface2'
+
         return net
     
     def _load_wm_decoder(self, args, wm_args):
-        if args.wm_algorithm.lower() == 'stegformer':
-            # Cargar el decodificador de marca de agua (StegFormer)
+        if args.wm_algorithm.lower() == 'facesings':
+            # Load the watermark decoder
+            pass
+
+        elif args.wm_algorithm.lower() == 'stegformer':
             decoder = build_stegformer_models(wm_args, build='decoder')
 
-            # Cargar pesos si existe ruta
             if os.path.exists(args.wm_model_path):
                 print(f"[*] Loading WM Decoder from {args.wm_model_path}")
                 load_weights_StegFormer(decoder, args.wm_model_path, tag=args.wm_tag)
+            else:
+                raise FileNotFoundError(f"[*] WM Decoder weights not found at {args.wm_model_path}")
 
         elif args.wm_algorithm.lower() == 'stegaformer':
-            pass
+            decoder = build_stegaformer_models(wm_args, build='decoder')
 
+            if os.path.exists(args.wm_model_path):
+                print(f"[*] Loading WM Decoder from {args.wm_model_path}")
+                load_weights_StegFormer(decoder, args.wm_model_path, tag=args.wm_tag)
+            else:
+                raise FileNotFoundError(f"[*] WM Decoder weights not found at {args.wm_model_path}")
         return decoder
 
     def attack_batch_pipeline(self, img_org, tag, update_weights=False):
@@ -498,55 +536,167 @@ class AttackEmbeddings:
             return final_attack
         else:
             return best_attack
+        
+    def attack_batch_baseline_l2_masked(self, imgs_wm, tag):
 
-    def attack_batch_baseline_linf_masked(self, img_wm, tag):
+        if imgs_wm.max() > 1.0:
+            imgs_wm = imgs_wm / 255.0
+
+        B = imgs_wm.shape[0]
+
+        with torch.no_grad():
+            boxes_list, landmarks_list = self.facenet.detect_boxes_batch(imgs_wm)
+            if any(b is None for b in boxes_list):
+                raise ValueError("MTCNN failed to detect face in some images")
+            zid = l2_norm(self.facenet.embed_batch_with_boxes(
+                imgs_wm, boxes_list, landmarks_list, requires_grad=False
+            )).detach()
+
+        delta_img = torch.randn_like(imgs_wm).to(self.device)
+        delta_img = l2_project(delta_img, self.opts.epsilon)  
+        delta_img.requires_grad = True
+
+        best_attack = None
+        best_loss = float('inf')
+
+        face_masks = []
+        for i in range(B):
+            fm = generate_face_box_mask(boxes_list[i][None], imgs_wm[i:i+1].shape, self.device)
+            face_masks.append(fm)
+        face_mask = torch.cat(face_masks, dim=0)
+        final_mask = face_mask.to(self.device)
+
+        for i in range(self.opts.pgd_steps):
+            delta_masked = delta_img * final_mask
+            x_adv = torch.clamp(imgs_wm + delta_masked, 0, 1)
+
+            zadv = l2_norm(self.facenet.embed_batch_with_boxes(
+                x_adv, boxes_list, landmarks_list, requires_grad=True))
+
+            ladv = self.adv_loss(zadv, zid)
+            lrec = self.rec_loss(x_adv, imgs_wm)
+            #loss  = ladv + lrec
+            lfreq = self.freq_loss(x_adv, imgs_wm)
+            loss  = ladv + lrec + lfreq
+
+            if delta_img.grad is not None:
+                delta_img.grad.zero_()
+            loss.backward()
+
+            with torch.no_grad():
+                grad_masked = delta_img.grad * final_mask   
+                delta_img.copy_(pgd_step(delta_img, grad_masked, self.opts.step_size))
+                delta_img.copy_(delta_img * final_mask)   
+                delta_img.copy_(l2_project(delta_img, self.opts.epsilon))
+
+            if self.opts.log_inner_steps:  
+                delta_l2 = torch.norm(
+                    delta_img.detach().view(delta_img.size(0), -1), dim=1
+                ).mean().item()
+                
+                delta_l2_per_img = torch.norm(
+                    delta_img.detach().view(delta_img.size(0), -1), dim=1
+                )  # [B]
+                budget_used_frac = (delta_l2_per_img / (self.opts.epsilon + 1e-12)).mean().item()
+                
+                delta_mag = torch.norm(delta_img[0].detach(), dim=0, keepdim=True)  # [1, H, W]
+                evident_perturbation = delta_mag / (delta_mag.max() + 1e-12)
+                evident_perturbation = evident_perturbation.clamp(0, 1)
+
+                self.writer.add_image(f"{tag}/Perturbation", evident_perturbation, self.inner_step_count)
+                self.writer.add_scalar(f"{tag}/PGD/loss",          loss.item(),        self.inner_step_count)
+                self.writer.add_scalar(f"{tag}/PGD/adv_loss",      ladv.item(),        self.inner_step_count)
+                self.writer.add_scalar(f"{tag}/PGD/rec_loss",      lrec.item(),        self.inner_step_count)
+                self.writer.add_scalar(f"{tag}/PGD/freq_loss",     lfreq.item(),       self.inner_step_count)
+                self.writer.add_scalar(f"{tag}/PGD/delta_l2",      delta_l2,           self.inner_step_count)
+                self.writer.add_scalar(f"{tag}/PGD/budget_used",   budget_used_frac,   self.inner_step_count)
+
+                self.per_step_loss_buffer.append(loss.item())
+                self.per_step_delta_buffer.append(delta_l2) 
+                self.per_step_lrec_buffer.append(lrec.item())
+                self.per_step_ladv_buffer.append(ladv.item())
+                self.per_step_lfreq_buffer.append(lfreq.item())
+            
+            self.inner_step_count += 1
+
+            if  loss.item() < best_loss:
+                best_loss = loss.item()
+                best_attack = (x_adv.detach(), zid.detach(), zadv.detach(),
+                            delta_img.clone().detach(), loss.item(), ladv.item(), lrec.item(), lfreq.item(), i)
+
+        return best_attack
+
+    def attack_batch_baseline_linf_masked(self, imgs_wm, tag):
         """
         Baseline attack: PGD directly in the pixel space with L-infinity constraint, without using the AAD network or the fusion module.
         """
+        # image normalization if it in normal image range
+        if imgs_wm.max() > 1.0:
+            imgs_wm = imgs_wm / 255.0
+
+        B = imgs_wm.shape[0]
+        #print('batch size:', B)
+
         # 1. Get the original embedding as reference (zid) before the attack
         with torch.no_grad():
-            img_org_aligned = alignment(img_wm) # resize to 112x112 for ARCface
-            img_org_for_net = (img_org_aligned - 0.5) / 0.5 # ARCFace normalization
-            zid = l2_norm(self.facenet(img_org_for_net)).detach() # Normakization to facilitate the project step of the PGD
+            # detect the face in the watermarked image to be able to do the alignment for the ARCface model
+            boxes_list, landmarks_list = self.facenet.detect_boxes_batch(imgs_wm)
+            #compare_crops_interactive_facenet(imgs_wm, boxes_list, landmarks_list, image_size=160)
+            #compare_crops_interactive_arcface(imgs_wm, boxes_list, landmarks_list, image_size=112)
+            
+            if any(b is None for b in boxes_list):
+                raise ValueError("MTCNN failed to detect face in some images")
+            
+            zid = l2_norm(self.facenet.embed_batch_with_boxes(
+                                imgs_wm, boxes_list, landmarks_list, requires_grad=False
+                            )).detach()
 
         # 2. Initialize delta (perturbation in the pixel space)
-        #delta_img = torch.zeros_like(img_wm).to(self.device)
-        delta_img = torch.zeros_like(img_wm).uniform_(-self.opts.epsilon, self.opts.epsilon).to(self.device)
+        #delta_img = torch.zeros_like(imgs_wm).to(self.device)
+        delta_img = torch.zeros_like(imgs_wm).uniform_(-self.opts.epsilon, self.opts.epsilon).to(self.device)
         delta_img.requires_grad = True # To be able to compute gradients with respect to the perturbation in the pixel space
 
         best_attack = None
         best_loss = float('inf')
 
+        # 3. Compute masks in batch [B, C, H, W]
+        face_masks = []
+
         # compute the masks for the masked PGD attack
-        rbag_mask = generate_background_mask(self.model_bga_seg, img_wm) 
-        mask_edges = compute_sobel_edges_mask(img_wm, threshold=0.5) 
+        for i in range(B):
+            fm = generate_face_box_mask(boxes_list[i][None], imgs_wm[i:i+1].shape, self.device)
+            face_masks.append(fm)
 
         # Compound binary mask: [B, C, H, W]
         # 1 = Attack, face and low frequences | 0 = Don't attack, background and high frequencies (edges)
-        final_mask =  rbag_mask * (1 - mask_edges)
-        final_mask = final_mask.to(self.device)
+        face_mask = torch.cat(face_masks, dim=0)    # [B, C, H, W]
+        #mask_edges = compute_sobel_edges_mask(imgs_wm, threshold=0.5)    # [B, 1, H, W]
+        #final_mask = (face_mask * (1 - mask_edges)).to(self.device)
+        final_mask = face_mask.to(self.device)
 
         # Loop PGD
         for i in range(self.opts.pgd_steps):
             delta_masked = delta_img * final_mask 
             # Generate the adversarial image by adding the perturbation to the original watermarked image
-            x_adv = torch.clamp(img_wm + delta_masked, 0, 1)
+            x_adv = torch.clamp(imgs_wm + delta_masked, 0, 1)
 
             # 3. Extract embedding of the perturbed image to compute loss
             # Do the aligenment and normalization for ARCface (the attacked FR)
-            x_adv_aligned = alignment(x_adv) # resize to 112x112 for ARCface
-            x_adv_for_net = (x_adv_aligned - 0.5) / 0.5 # ARCFace normalization
-            zadv = l2_norm(self.facenet(x_adv_for_net)) # Normakization to facilitate the project step of the PGD
+            zadv = l2_norm(self.facenet.embed_batch_with_boxes(
+                            x_adv, boxes_list, landmarks_list, requires_grad=True))
 
             # 4. Compute losses
             # we want to minimize the similarity between the adversarial embedding and the original one (maximize the distance)
             ladv = self.adv_loss(zadv, zid)
             # we want to preserve the watermark and the visual quality of the image,
-            lrec = self.rec_loss(x_adv, img_wm)
-            loss = ladv +  lrec # final loss to minimize
+            lrec = self.rec_loss(x_adv, imgs_wm)
+            # we want to penalyze the frequency components of the perturbation
+            lfreq = self.freq_loss(x_adv, imgs_wm)
+            loss = ladv +  lrec + lfreq # final loss to minimize
 
             # 5. Backpropagation and PGD step
-            if delta_img.grad is not None: delta_img.grad.zero_()
+            if delta_img.grad is not None: 
+                delta_img.grad.zero_()
             loss.backward()
 
             # 6. PGD L-infinity step and Projection
@@ -556,41 +706,34 @@ class AttackEmbeddings:
                 delta_img.copy_(linf_project(delta_img, self.opts.epsilon))
                 delta_img.copy_(delta_img * final_mask)
 
-            if self.opts.log_inner_steps and i % 10 == 0:
-                 evident_perturbation = torch.abs(delta_img[0]) / self.opts.epsilon
-                 self.writer.add_image(f"{tag}/Perturbation", evident_perturbation, self.inner_step_count)
-
             if self.opts.log_inner_steps:  
+                delta_linf = delta_img.abs().max().item()
+                delta_sat = (delta_img.abs() >= self.opts.epsilon - 1e-6).float().mean().item()
+                evident_perturbation = torch.abs(delta_img[0]) / self.opts.epsilon
+                self.writer.add_image(f"{tag}/Perturbation", evident_perturbation, self.inner_step_count)
                 self.writer.add_scalar(f"{tag}/PGD/loss", loss.item(), self.inner_step_count)
                 self.writer.add_scalar(f"{tag}/PGD/adv_loss", ladv.item(), self.inner_step_count)
                 self.writer.add_scalar(f"{tag}/PGD/rec_loss", lrec.item(), self.inner_step_count)
+                self.writer.add_scalar(f"{tag}/PGD/freq_loss", lfreq.item(), self.inner_step_count)
                 self.writer.add_scalar(f"{tag}/PGD/delta_l2", torch.norm(delta_img.detach(), dim=1).mean().item(), self.inner_step_count)
+                self.writer.add_scalar(f"{tag}/PGD/delta_linf", delta_linf, self.inner_step_count)
+                self.writer.add_scalar(f"{tag}/PGD/delta_sat_frac", delta_sat, self.inner_step_count)
+                self.per_step_loss_buffer.append(loss.item())
+                self.per_step_delta_buffer.append(delta_img.abs().max().item())
+                self.per_step_lrec_buffer.append(lrec.item())
+                self.per_step_ladv_buffer.append(ladv.item())
+                self.per_step_lfreq_buffer.append(lfreq.item())
             
             self.inner_step_count += 1
 
             if loss.item() < best_loss:
                 best_loss = loss.item()
                 best_attack = (x_adv.detach(), zid.detach(), zadv.detach(), delta_img.clone().detach(), 
-                               loss.item(), ladv.item(), lrec.item())
+                               loss.item(), ladv.item(), lrec.item(), lfreq.item(), i)
 
-        # After finishing we compute the final attack with the last delta_img obtained, 
-        # to compare it with the best attack obtained in the inner loop of the PGD        
-        with torch.no_grad():
-            delta_masked = delta_img * final_mask
-            x_adv = torch.clamp(img_wm + delta_masked, 0, 1)
-            zadv = l2_norm(self.facenet((alignment(x_adv) - 0.5) / 0.5))
-            self.ladv = self.adv_loss(zadv, zid)
-            self.lrec = self.rec_loss(x_adv, img_wm) 
-            loss = self.ladv + self.lrec
-        
-        final_attack = (x_adv.detach(), zid.detach(), zadv.detach(), delta_masked.detach(), loss.item(), self.ladv.item(), self.lrec.item())
-        
-        if final_attack[4] < best_loss:
-            return final_attack
-        else:
-            return best_attack
+        return best_attack
 
-    def run_eval_face_recognition(self, filename_results="face_recognition_results.json", epoch=0, set_name='all'):
+    def run_eval_face_recognition_v1(self, filename_results="face_recognition_results.json", epoch=0, set_name='all'):
         """
         Evaluate the face recognition performance on the watermarked and attacked images.
             - Computes the cosine similarity between the template and both the watermarked and attacked images.
@@ -616,94 +759,160 @@ class AttackEmbeddings:
             names = ['train']
             loaders = [self.face_loader_train]
 
+        models = {
+            self.opts.facenet_mode: self.facenet, # white box
+            self.opts.facenet_mode_test: self.facenet_test # black box
+        }
+
         results = {}
-        for set_name, dataloader in zip(names, loaders):
-            all_sim_wm = []
-            all_sim_attacked = []
-            successful_attacks = 0
-            correct_wm = 0
-            correct_attacked = 0
-            total_samples = 0
-            for template_img, wm_img, attacked_img, filename in tqdm(dataloader, desc=f"Evaluating Face Recognition on {set_name} set"):
-                wm_img = wm_img.to(self.device)
-                template_img = template_img.to(self.device)
-                attacked_img = attacked_img.to(self.device)
+        for model_name, model in models.items():
+            for split_name, dataloader in zip(names, loaders):
+                all_sim_wm = []
+                all_sim_attacked = []
+                successful_attacks = 0
+                correct_wm = 0
+                correct_attacked = 0
+                total_samples = 0
+                for template_img, wm_img, attacked_img, filename in tqdm(dataloader, desc=f"Evaluating Face Recognition on {split_name} set"):
+                    wm_img = wm_img.to(self.device)
+                    template_img = template_img.to(self.device)
+                    attacked_img = attacked_img.to(self.device)
 
-                # Check range [-1, 1]
-                assert template_img.min() >= 0.0 and template_img.max() <= 1.0, f"Invalid range: [{template_img.min():.2f}, {template_img.max():.2f}]"
-                assert attacked_img.min() >= 0.0 and attacked_img.max() <= 1.0, f"Invalid range: [{attacked_img.min():.2f}, {attacked_img.max():.2f}]"
-                assert wm_img.min() >= 0.0 and wm_img.max() <= 1.0, f"Invalid range: [{wm_img.min():.2f}, {wm_img.max():.2f}]"
+                    # Get the embeddings for the original image and the attacked image
+                    with torch.no_grad():
+                        # detect boxes and landmarks for the watermarked images
+                        boxes_list, landmarks_list = model.detect_boxes_batch(wm_img)
+                        #compare_crops_interactive(imgs_wm, boxes_list, landmarks_list, image_size=112)
+                        # extract the landmarks and boxes for the template
+                        boxes_list_t, landmarks_list_t = model.detect_boxes_batch(template_img)
+                        
+                        # Extract the embeddings (using aligment)
+                        zid_wm = l2_norm(model.embed_batch_with_boxes(
+                                            wm_img, boxes_list, landmarks_list, requires_grad=False
+                                        )).detach() # facial vector for the watermarked image
+                        
+                        zid_template = l2_norm(model.embed_batch_with_boxes(
+                                            template_img, boxes_list_t, landmarks_list_t, requires_grad=False
+                                        )).detach() # facial vector for the template
 
-                # Get the embeddings for the original image and the attacked image
-                with torch.no_grad():
+                        zadv_attacked = l2_norm(model.embed_batch_with_boxes(
+                                            attacked_img, boxes_list, landmarks_list, requires_grad=False
+                                        )).detach() # facial vector for the attacked image
 
-                    if self.opts.facenet_mode_test == 'arcface':
-                        # resize the images to 112x112 and align them for the FaceNet model
-                        template_aligned = alignment(template_img, size=(112, 112))
-                        img_attacked_aligned = alignment(attacked_img, size=(112, 112))
-                        img_wm_aligned = alignment(wm_img, size=(112, 112))
+                        # compute cosine similarity between the template and the watermarked image before the attack,
+                        #  and between the template and the attacked image
+                        cos = torch.nn.CosineSimilarity(dim=1, eps=1e-6)
+                        sim_wm = cos(zid_template, zid_wm)
+                        sim_attacked = cos(zid_template, zadv_attacked)
+                        
+                        # compute the predicted labels based on the threshold
+                        is_recognized_wm = sim_wm > threshold
+                        is_recognized_attacked = sim_attacked > threshold
+                        # The attack is successful if the watermarked image is recognized (sim_wm > threshold) 
+                        # and the attacked image is not recognized (sim_attacked <= threshold)
+                        attack_success = is_recognized_wm & (~is_recognized_attacked)
+                        # update the counters for the metrics
+                        successful_attacks += attack_success.sum().item()
+                        correct_wm += is_recognized_wm.sum().item()
+                        correct_attacked += is_recognized_attacked.sum().item()
+                        total_samples += template_img.size(0)
+                        # store the cosine similarities for both cases to compute the average and std later
+                        all_sim_wm.extend(sim_wm.cpu().numpy().tolist())
+                        all_sim_attacked.extend(sim_attacked.cpu().numpy().tolist())
 
-                    elif self.opts.facenet_mode_test == 'facenet':
-                        # resize the images to 160x160 and align them for the FaceNet model
-                        template_aligned = alignment(template_img, size=(160, 160))
-                        img_attacked_aligned = alignment(attacked_img, size=(160, 160))
-                        img_wm_aligned = alignment(wm_img, size=(160, 160))
+                # --- Compute final metrics for the set ---
+                acc_original = (correct_wm / total_samples) * 100
+                acc_attacked = (correct_attacked / total_samples) * 100
+                # Attack Success Rate (ASR) is the percentage of samples where the watermarked image is correctly recognized but the attacked image is not recognized.
+                asr = (successful_attacks / correct_wm) * 100 if correct_wm > 0 else 0
 
-                    # based on the fact that the imagea are normalized to [0, 1].
-                    # Is needed to normalize them to the range [-1,1]
-                    template_for_net = (template_aligned - 0.5) / 0.5
-                    img_attacked_for_net = (img_attacked_aligned - 0.5) / 0.5
-                    img_wm_for_net = (img_wm_aligned - 0.5) / 0.5
-                    
-                    zid_template = l2_norm(self.facenet_test(template_for_net)).detach() # facial vector for the template
-                    zadv_attacked = l2_norm(self.facenet_test(img_attacked_for_net)).detach() # facial vector for the attacked image
-                    zid_wm = l2_norm(self.facenet_test(img_wm_for_net)).detach() # facial vector for the watermarked image
+                print(f"\nResultados {split_name.upper()} for model {model_name}:")
+                print(f"  - Acc Original: {acc_original:.2f}%")
+                print(f"  - Acc Post-Ataque: {acc_attacked:.2f}%")
+                print(f"  - Attack Success Rate (ASR): {asr:.2f}%")
 
-                    # compute cosine similarity between the template and the watermarked image before the attack,
-                    #  and between the template and the attacked image
-                    cos = torch.nn.CosineSimilarity(dim=1, eps=1e-6)
-                    sim_wm = cos(zid_template, zid_wm)
-                    sim_attacked = cos(zid_template, zadv_attacked)
-                    
-                    # compute the predicted labels based on the threshold
-                    is_recognized_wm = sim_wm > threshold
-                    is_recognized_attacked = sim_attacked > threshold
-                    # The attack is successful if the watermarked image is recognized (sim_wm > threshold) 
-                    # and the attacked image is not recognized (sim_attacked <= threshold)
-                    attack_success = is_recognized_wm & (~is_recognized_attacked)
-                    # update the counters for the metrics
-                    successful_attacks += attack_success.sum().item()
-                    correct_wm += is_recognized_wm.sum().item()
-                    correct_attacked += is_recognized_attacked.sum().item()
-                    total_samples += template_img.size(0)
-                    # store the cosine similarities for both cases to compute the average and std later
-                    all_sim_wm.extend(sim_wm.cpu().numpy().tolist())
-                    all_sim_attacked.extend(sim_attacked.cpu().numpy().tolist())
+                # compute the average cosine similarity for both cases
+                avg_sim_wm = np.mean(all_sim_wm)
+                avg_sim_attacked = np.mean(all_sim_attacked)
+                std_sim_wm = np.std(all_sim_wm)
+                std_sim_attacked = np.std(all_sim_attacked)
 
-            # --- Compute final metrics for the set ---
-            acc_original = (correct_wm / total_samples) * 100
-            acc_attacked = (correct_attacked / total_samples) * 100
-            # Attack Success Rate (ASR) is the percentage of samples where the watermarked image is correctly recognized but the attacked image is not recognized.
-            asr = (successful_attacks / correct_wm) * 100 if correct_wm > 0 else 0
-
-            print(f"\nResultados {set_name.upper()}:")
-            print(f"  - Acc Original: {acc_original:.2f}%")
-            print(f"  - Acc Post-Ataque: {acc_attacked:.2f}%")
-            print(f"  - Attack Success Rate (ASR): {asr:.2f}%")
-
-            # compute the average cosine similarity for both cases
-            avg_sim_wm = np.mean(all_sim_wm)
-            avg_sim_attacked = np.mean(all_sim_attacked)
-            std_sim_wm = np.std(all_sim_wm)
-            std_sim_attacked = np.std(all_sim_attacked)
-
-            print(f"Mean Cosine Similarity - Watermarked: {avg_sim_wm:.4f} ± {std_sim_wm:.4f}")
-            print(f"Mean Cosine Similarity - Attacked: {avg_sim_attacked:.4f} ± {std_sim_attacked:.4f}")    
-            
-            results[set_name] = {"acc_wm": acc_original, "asr": asr, "acc_attacked":acc_attacked,
-                                  "avg_sim_wm": avg_sim_wm, "std_sim_wm": std_sim_wm, "avg_sim_attacked": avg_sim_attacked, "std_sim_attacked": std_sim_attacked}
+                print(f"Mean Cosine Similarity - Watermarked: {avg_sim_wm:.4f} ± {std_sim_wm:.4f}")
+                print(f"Mean Cosine Similarity - Attacked: {avg_sim_attacked:.4f} ± {std_sim_attacked:.4f}")    
+                
+                results[f"{split_name}_{model_name}"] = {"acc_wm": acc_original, "asr": asr, "acc_attacked":acc_attacked,
+                                    "avg_sim_wm": avg_sim_wm, "std_sim_wm": std_sim_wm, "avg_sim_attacked": avg_sim_attacked, "std_sim_attacked": std_sim_attacked,
+                                    "all_sim_wm": all_sim_wm, "all_sim_attacked": all_sim_attacked}
         # save the results in a json file
         with open(os.path.join(self.output_to_save, self.folder_struct, self.id_number_exp, f'{set_name}_ep{epoch}_{filename_results}'), 'w') as f:
+            json.dump(results, f, indent=4)
+
+    def run_eval_face_recognition(self, filename_results="face_recognition_results.json", epoch=0, set_name='all'):
+        self.create_FR_sets(set_name)
+
+        if set_name == 'all':
+            names = ['train', 'test']
+            loaders = [self.face_loader_train, self.face_loader_test]
+        elif set_name in ['val', 'train']:
+            names = ['train']
+            loaders = [self.face_loader_train]
+        elif set_name == 'test':
+            names = ['test']
+            loaders = [self.face_loader_test]
+
+        models = {
+            self.opts.facenet_mode: self.facenet,
+            self.opts.facenet_mode_test: self.facenet_test
+        }
+
+        results = {}
+        for model_name, model in models.items():
+            for split_name, dataloader in zip(names, loaders):
+                all_sim_wm = []
+                all_sim_attacked = []
+                total_samples = 0
+
+                for template_img, wm_img, attacked_img, filename in tqdm(dataloader, desc=f"FR Eval {split_name}"):
+                    wm_img = wm_img.to(self.device)
+                    template_img = template_img.to(self.device)
+                    attacked_img = attacked_img.to(self.device)
+
+                    with torch.no_grad():
+                        boxes_wm, lm_wm   = model.detect_boxes_batch(wm_img)
+                        boxes_t,  lm_t    = model.detect_boxes_batch(template_img)
+
+                        zid_wm       = l2_norm(model.embed_batch_with_boxes(wm_img,       boxes_wm, lm_wm, requires_grad=False))
+                        zid_template = l2_norm(model.embed_batch_with_boxes(template_img, boxes_t,  lm_t,  requires_grad=False))
+                        zadv         = l2_norm(model.embed_batch_with_boxes(attacked_img, boxes_wm, lm_wm, requires_grad=False))
+
+                        cos = torch.nn.CosineSimilarity(dim=1, eps=1e-6)
+                        sim_wm      = cos(zid_template, zid_wm)
+                        sim_attacked = cos(zid_template, zadv)
+
+                        all_sim_wm.extend(sim_wm.cpu().numpy().tolist())
+                        all_sim_attacked.extend(sim_attacked.cpu().numpy().tolist())
+                        total_samples += template_img.size(0)
+
+                results[f"{split_name}_{model_name}"] = {
+                    "total_samples":     total_samples,
+                    "all_sim_wm":        all_sim_wm,
+                    "all_sim_attacked":  all_sim_attacked,
+                    "avg_sim_wm":        float(np.mean(all_sim_wm)),
+                    "std_sim_wm":        float(np.std(all_sim_wm)),
+                    "avg_sim_attacked":  float(np.mean(all_sim_attacked)),
+                    "std_sim_attacked":  float(np.std(all_sim_attacked)),
+                    "delta_sim_mean":    float(np.mean(all_sim_wm) - np.mean(all_sim_attacked))
+                }
+
+                print(f"\n[FR] {split_name.upper()} | model={model_name}")
+                print(f"  avg_sim_wm:       {np.mean(all_sim_wm):.4f} ± {np.std(all_sim_wm):.4f}")
+                print(f"  avg_sim_attacked: {np.mean(all_sim_attacked):.4f} ± {np.std(all_sim_attacked):.4f}")
+                print(f"  delta_sim_mean:   {np.mean(all_sim_wm) - np.mean(all_sim_attacked):.4f}")
+
+        out_path = os.path.join(self.output_to_save, self.folder_struct,
+                                self.id_number_exp,
+                                f'{set_name}_ep{epoch}_{filename_results}')
+        with open(out_path, 'w') as f:
             json.dump(results, f, indent=4)
                     
     def run_attack(self, tag):
@@ -775,11 +984,39 @@ class AttackEmbeddings:
                 real_wms = real_wms.to(self.device) # real watermarks (binary)
                 org_imgs = org_imgs.to(self.device) # original images (before watermarking)
 
+                #print('range imgs_wm:', imgs_wm.min().item(), imgs_wm.max().item(), "and shape:", imgs_wm.shape)
+                #print('range real_wms:', real_wms.min().item(), real_wms.max().item(), "and shape:", real_wms.shape)
+                #print('range org_imgs:', org_imgs.min().item(), org_imgs.max().item(), "and shape:", org_imgs.shape)
+
                 # Run the corresponding attack for the batch
                 if self.opts.baseline == True: # we attack directly the watermarked images with a pixel-based attack (L-infinity)
-                    imgs_adv, zid, zadv, delta, loss, ladv, lrec = self.attack_batch_baseline_linf_masked(imgs_wm, tag=tag_new)
-                else: # we attack the embeddings with the complete pipeline (AAD + Fusion)
-                    imgs_adv, zid, zadv, delta, loss, ladv, lrec= self.attack_batch_pipeline(imgs_wm, tag=tag_new, update_weights=update_weights)
+                    #imgs_adv, zid, zadv, delta, loss, ladv, lrec, lfreq, i_pgd = self.attack_batch_baseline_linf_masked(imgs_wm, tag=tag_new)
+                    imgs_adv, zid, zadv, delta, loss, ladv, lrec, lfreq, i_pgd = self.attack_batch_baseline_l2_masked(imgs_wm, tag=tag_new)
+                #else: # we attack the embeddings with the complete pipeline (AAD + Fusion)
+                #    imgs_adv, zid, zadv, delta, loss, ladv, lrec= self.attack_batch_pipeline(imgs_wm, tag=tag_new, update_weights=update_weights)
+
+                if i == 0:
+                    self._save_perturbations_inf(delta, prefix=f'{tag_new}_batch0')
+        
+                if i == 0 and self.opts.log_inner_steps:
+                    for step_idx, (l, d) in enumerate(zip(
+                            self.per_step_loss_buffer, 
+                            self.per_step_delta_buffer,
+                            )):
+                        self.writer.add_scalar(f"{tag_new}/PGD_traj/loss_vs_step_batch0", l, step_idx)
+                        self.writer.add_scalar(f"{tag_new}/PGD_traj/delta_vs_step_batch0", d, step_idx)
+                        self.writer.add_scalar(f"{tag_new}/PGD_traj/rec_loss_vs_step_batch0", self.per_step_lrec_buffer[step_idx], step_idx)
+                        self.writer.add_scalar(f"{tag_new}/PGD_traj/adv_loss_vs_step_batch0", self.per_step_ladv_buffer[step_idx], step_idx)
+                        self.writer.add_scalar(f"{tag_new}/PGD_traj/freq_loss_vs_step_batch0", self.per_step_lfreq_buffer[step_idx], step_idx)
+                
+                if self.opts.log_inner_steps:
+                    self.per_step_loss_buffer.clear()
+                    self.per_step_delta_buffer.clear()
+                    self.per_step_lrec_buffer.clear()
+                    self.per_step_ladv_buffer.clear()
+                    self.per_step_lfreq_buffer.clear()
+
+                print("id iteration best attack:", i_pgd, "loss:", loss, "ladv:", ladv, "lrec:", lrec, "lfreq:", lfreq)
                 
                 # If we are training the fusion module
                 if update_weights and tag_new == 'train':
@@ -809,8 +1046,17 @@ class AttackEmbeddings:
                     # we expect that the image before decoder should be in the range [0,1]
                     # all the inputs are in the range [0,1]
                     if self.opts.wm_algorithm.lower() == 'stegformer':
+                        if imgs_wm.max() > 1.0:
+                            imgs_wm = imgs_wm / 255.0
                         imgs_wm_c = torch.clamp(imgs_wm, 0, 1)
-                        imgs_adv_c = torch.clamp(imgs_adv, 0, 1)
+                        imgs_adv_c = torch.clamp(imgs_adv, 0, 1) # always in [0,1]
+                    
+                    elif self.opts.wm_algorithm.lower() == 'stegaformer':
+                        if imgs_wm.max() <= 1.0:
+                            imgs_wm_c = (imgs_wm * 255.0).clamp(0, 255)
+                        else:
+                            imgs_wm_c = imgs_wm   
+                        imgs_adv_c = (imgs_adv * 255.0).clamp(0, 255)
 
                     # Recover the watermark from both the watermarked image before the attack and the attacked image
                     wm_before = self.wm_decoder(imgs_wm_c)
@@ -818,12 +1064,20 @@ class AttackEmbeddings:
                     # compute the bit accuracy rate for both cases
                     acc_b = self.get_bit_accuracy_rate(real_wms, wm_before, bpp=self.opts.wm_bpp)
                     acc_a = self.get_bit_accuracy_rate(real_wms, wm_after, bpp=self.opts.wm_bpp)
-                    
+
+                    #print('before attack - acc wm:', acc_b, "after attack - acc wm:", acc_a, "cosine similarity:", cos_sim, "loss:", loss)
+                    # ensure to be in the same range for the computation of PSNR and SSIM
+                    o_imgs, w_imgs, a_imgs = [
+                                (img * 255.0 if self.data_range == 255 and img.max() <= 1.0 else 
+                                img / 255.0 if self.data_range == 1 and img.max() > 1.0 else img) 
+                                for img in [org_imgs, imgs_wm, imgs_adv]
+                            ]
+                            
                     # Compute PSNR and SSIM between the attacked image and the watermarked image before the attack
-                    p_initial = self.cal_psnr(org_imgs, imgs_wm).item()
-                    s_initial = self.cal_ssim(org_imgs, imgs_wm).item()
-                    p = self.cal_psnr(imgs_adv, imgs_wm).item()
-                    s = self.cal_ssim(imgs_adv, imgs_wm).item()
+                    p_initial = self.cal_psnr(o_imgs, w_imgs).item()
+                    s_initial = self.cal_ssim(o_imgs, w_imgs).item()
+                    p = self.cal_psnr(a_imgs, w_imgs).item()
+                    s = self.cal_ssim(a_imgs, w_imgs).item()
 
                     # Store results for the batch in the epoch results
                     results['psnr_start'].append(p_initial)
@@ -844,16 +1098,14 @@ class AttackEmbeddings:
                     results['loss_std'].append(loss)
 
                     # Store the images of the attacked samples for qualitative evaluation (in npy and png formats)
-                    if tag_new == 'val': # only for pipeline way
-                         self.save_samples(imgs_adv, filenames, tag=tag_new)
-                    else:
-                        self.save_samples(imgs_adv, filenames, tag=tag_new)
+                    self.save_samples(imgs_adv, filenames, tag=tag_new)
 
                 # Log metrics to TensorBoard every 10 steps
                 if (current_log_step + 1) % 10 == 0:
                     self.writer.add_scalar(f'{tag_new}/Loss', loss, current_log_step)
                     self.writer.add_scalar(f'{tag_new}/Adv_Loss', ladv, current_log_step)
                     self.writer.add_scalar(f'{tag_new}/Rec_Loss', lrec, current_log_step)
+                    self.writer.add_scalar(f'{tag_new}/Freq_Loss', lfreq, current_log_step)
                     self.writer.add_scalar(f'{tag_new}/Cosine_Similarity', cos_sim, current_log_step)
                     self.writer.add_scalar(f'{tag_new}/PSNR', p, current_log_step)
                     self.writer.add_scalar(f'{tag_new}/SSIM', s, current_log_step)
@@ -867,9 +1119,10 @@ class AttackEmbeddings:
                 self.scheduler.step()
                 self._save_checkpoint(epoch + 1, loss, is_best=False)  
 
-            if results['loss'][-1] < best_global_loss_avg:
+            epoch_avg_loss = np.mean(results['loss']) # for multiple epochs
+            if epoch_avg_loss < best_global_loss_avg:
                 best_average_results = {k: (np.std(v) if 'std' in k else np.mean(v)) for k, v in results.items()}
-                best_global_loss_avg = results['loss'][-1]
+                best_global_loss_avg = epoch_avg_loss
 
             # after each epoch we do the evaluation of face recognition performance.
             if self.opts.baseline == False and tag_new == 'train': # only for pipeline way,
@@ -901,6 +1154,28 @@ class AttackEmbeddings:
             img_to_save.save(os.path.join(self.imgout_dir, 
                                  tag,
                                  name))
+
+    def _save_perturbations_inf(self, delta, prefix='delta', max_images=8):
+        """
+        Save the perturbation patterns (delta) for a batch of images in both visual and numerical formats for analysis.
+        delta: [B, C, H, W] range [-ε, +ε]
+        """
+        
+        B = min(delta.shape[0], max_images)  # máximo 8 imágenes
+        
+        for idx in range(B):
+            delta_img = delta[idx]  # [C, H, W]
+            delta_scaled = (delta_img - delta_img.min()) / (delta_img.max() - delta_img.min() + 1e-8)
+            
+            delta_mag = torch.sqrt((delta_img ** 2).sum(dim=0))  # [H, W]
+            delta_mag_norm = delta_mag / (delta_mag.max() + 1e-8)  # normalizar a [0,1]
+
+            vutils.save_image(delta_scaled, 
+                            os.path.join(self.delta_dir, f'{prefix}_img{idx:02d}_pattern.png'))
+            
+            delta_mag_np = (delta_mag_norm.cpu().numpy() * 255).astype('uint8')
+            Image.fromarray(delta_mag_np).save(
+                os.path.join(self.delta_dir, f'{prefix}_img{idx:02d}_magnitude.png'))
             
     def save_params_to_json(self):
         """
@@ -949,9 +1224,9 @@ class AttackEmbeddings:
         wm_algorithm: str = 'StegFormer'
     ) -> float:
         if wm_algorithm.lower() == 'stegformer':
-            pixel_acc = get_message_accuracy(msg, deco_msg, bpp=bpp)
+            pixel_acc = get_message_accuracy_StegFormer(msg, deco_msg, bpp=bpp)
         elif wm_algorithm.lower() == 'stegaformer':
-            pass
+            pixel_acc = get_message_accuracy_StegaFormer(msg, deco_msg, 16)
         else:
             raise ValueError(f"Unknown wm_algorithm: {wm_algorithm}")
 

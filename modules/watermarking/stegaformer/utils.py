@@ -19,6 +19,26 @@ from torch.utils.data import Dataset
 from torchvision import transforms
 from torch.utils import data
 
+def load_weights_decoder(decoder, save_path, tag = 'acc'):
+    """
+    Load the model weights from the specified path.
+    """
+    resume_decoder_path = os.path.join(save_path, f'best_{tag}_decoder.pth.tar')
+    assert os.path.exists(resume_decoder_path), \
+        f"Checkpoints not found for tag '{tag}' in {save_path}"
+      
+    decoder_ckpt = torch.load(resume_decoder_path)  
+    # El decoder usa un Positional Encoding diferente, también requiere limpieza
+    decoder_keys_to_remove = ["msg_pos.cached_penc"]
+    for key in decoder_keys_to_remove:
+        if key in decoder_ckpt['state_dict']:
+            print(f"🗑️ deleted incompatible key: {key}")
+            del decoder_ckpt['state_dict'][key]
+    # load the state
+    decoder.load_state_dict(decoder_ckpt['state_dict'])    
+    
+    print(f"Loaded weights from {save_path} with tag '{tag}'")
+
 class VGGLoss(nn.Module):
     """
     Part of pre-trained VGG16.
